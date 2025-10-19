@@ -14,7 +14,7 @@ pub struct SearchResult {
     pub best_move: Option<Move>,
     pub score: i32,
     pub nodes: u64,
-    pub pv_lines: Vec<(Move, i32)>, // Multi-PV support
+    pub pv_lines: Vec<(Move, i32)>,
 }
 
 pub struct SearchEngine {
@@ -86,6 +86,9 @@ impl SearchEngine {
         let mut best_score = 0;
         let mut prev_score = 0;
         let mut pv_lines = Vec::new();
+        
+        // 🆕 FIX #1: Track previous best move for stability
+        let mut prev_best_move = None;
 
         // Iterative deepening
         for depth in 1..=max_depth {
@@ -104,9 +107,25 @@ impl SearchEngine {
             }
 
             if let Some(m) = mv {
+                // 🆕 FIX #2: PV Stability Check
+                // Don't accept a new move if the score drops by more than 300cp
+                // unless we're at very shallow depth or have no previous move
+                let score_drop = prev_score - score;
+                let should_reject = depth > 6 
+                    && prev_best_move.is_some() 
+                    && score_drop > 300 
+                    && prev_score > -500; // Don't apply if already losing badly
+                
+                if should_reject {
+                    println!("info string Score dropped {}cp, keeping previous move", score_drop);
+                    // Keep the old move and break out
+                    break;
+                }
+                
                 best_move = Some(m);
                 best_score = score;
                 prev_score = score;
+                prev_best_move = Some(m);
                 pv_lines.push((m, score));
 
                 let elapsed_ms = start_time.elapsed().as_millis();
@@ -137,15 +156,30 @@ impl SearchEngine {
                 }
             }
 
+            // 🆕 FIX #3: Better time management
+            // If we're losing badly and score is getting worse, use less time
             if let Some(limit) = time_limit {
-                if start_time.elapsed() > limit / 2 {
-                    break;
-                }
-            }
-
-            if score.abs() > MATE_SCORE - 100 {
-                break;
-            }
+                // Calculate how much time to use based on position
+                let time_multiplier = if score < -500 {
+                    // Losing badly - move fast
+                    0.2
+                } else if score < -200 {
+                    // Slightly losing - moderate time
+                    0.4
+                } else if score > 300 {
+                    // Winning - can move faster
+                    0.4
+                } else {
+                    // Critical/equal position - use more time
+                    0.6
+            };
+    
+    let time_used_ratio = start_time.elapsed().as_millis() as f64 / limit.as_millis() as f64;
+    
+    if time_used_ratio > time_multiplier {
+        break;
+    }
+}
         }
 
         SearchResult {
@@ -157,7 +191,8 @@ impl SearchEngine {
     }
 
     fn search_aspiration(&self, board: &BoardState, depth: u8, prev_score: i32) -> (i32, Option<Move>) {
-        let mut window = 30;
+        // 🆕 FIX #4: Wider initial aspiration window for stability
+        let mut window = 50; // Increased from 30
         let mut alpha = prev_score - window;
         let mut beta = prev_score + window;
 
@@ -177,7 +212,7 @@ impl SearchEngine {
                 return (score, mv);
             }
 
-            window = (window * 2).min(600);
+            window = (window * 2).min(800); // Increased max window
         }
     }
 
@@ -285,7 +320,7 @@ impl SearchEngine {
 
         let static_eval = Evaluator::evaluate(board);
 
-        // **REVERSE FUTILITY PRUNING (Static Null Move)**
+        // REVERSE FUTILITY PRUNING
         if !pv_node && !in_check && depth <= 7 {
             let rfp_margin = 85 * depth as i32;
             if static_eval - rfp_margin >= beta_new {
@@ -293,7 +328,7 @@ impl SearchEngine {
             }
         }
 
-        // **NULL MOVE PRUNING with verification**
+        // NULL MOVE PRUNING with verification
         if !pv_node && !in_check && depth >= 3 && board.halfmove_clock < 90 {
             let mut null_board = board.clone();
             null_board.side_to_move = null_board.side_to_move.flip();
@@ -307,7 +342,6 @@ impl SearchEngine {
                 if depth < 12 {
                     return if score > MATE_SCORE - 100 { beta_new } else { score };
                 }
-                // Verification search for zugzwang
                 let verify = self.negamax(board, depth.saturating_sub(r), beta_new - 1, beta_new, ply, false);
                 if verify >= beta_new {
                     return if score > MATE_SCORE - 100 { beta_new } else { score };
@@ -326,7 +360,7 @@ impl SearchEngine {
             }
         }
 
-        // **INTERNAL ITERATIVE DEEPENING**
+        // INTERNAL ITERATIVE DEEPENING
         if tt_move.is_none() && depth >= 6 && pv_node {
             let iid_depth = depth - 2;
             self.negamax(board, iid_depth, alpha, beta_new, ply, true);
@@ -345,7 +379,7 @@ impl SearchEngine {
 
         self.order_moves(board, &mut moves, tt_move, ply);
 
-        // **SINGULAR EXTENSION**
+        // SINGULAR EXTENSION
         if !in_check && depth >= 8 && tt_move.is_some() && pv_node {
             let tt_mv = tt_move.unwrap();
             if let Some(entry) = &tt_entry {
@@ -366,7 +400,7 @@ impl SearchEngine {
                     }
                     
                     if excluded_score < s_beta {
-                        depth += 1; // Singular extension!
+                        depth += 1;
                     }
                 }
             }
@@ -384,7 +418,7 @@ impl SearchEngine {
 
             self.add_position(new_board.hash);
 
-            // **FUTILITY PRUNING**
+            // FUTILITY PRUNING
             let futile = !in_check && 
                         !new_board.is_in_check(new_board.side_to_move) &&
                         !mv.is_capture() && 
@@ -404,7 +438,7 @@ impl SearchEngine {
             let score = if move_count == 0 {
                 -self.negamax(&new_board, depth - 1, -beta_new, -alpha, ply + 1, pv_node)
             } else {
-                // **IMPROVED LMR with history/killer adjustments**
+                // IMPROVED LMR
                 let reduction = if move_count >= 3 && depth >= 3 && !in_check && 
                                  !new_board.is_in_check(new_board.side_to_move) &&
                                  !mv.is_capture() && !mv.is_promotion() {
@@ -464,7 +498,6 @@ impl SearchEngine {
                     self.update_killers(mv, ply);
                     self.update_history(mv, depth);
                     
-                    // Penalize failed quiets
                     for quiet in &quiets_tried {
                         if quiet.from != mv.from || quiet.to != mv.to {
                             let penalty = -(depth as i32) * (depth as i32);
