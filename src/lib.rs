@@ -12,7 +12,6 @@ mod uci;
 use board::BoardState;
 use search::SearchEngine;
 
-/// Python bindings for the Rust chess engine
 #[pymodule]
 fn chess_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyChessEngine>()?;
@@ -38,6 +37,7 @@ impl PyChessEngine {
     #[pyo3(signature = (fen, depth=None, time_ms=None))]
     fn search(
         &mut self,
+        py: Python<'_>,
         fen: &str,
         depth: Option<u8>,
         time_ms: Option<u64>,
@@ -51,13 +51,14 @@ impl PyChessEngine {
             time_ms,
         );
 
-        Python::with_gil(|py| {
-            let dict = pyo3::types::PyDict::new_bound(py);
-            dict.set_item("move", result.best_move.map(|m| m.to_uci()))?;
-            dict.set_item("score", result.score)?;
-            dict.set_item("nodes", result.nodes)?;
-            Ok(dict.into_py(py))
-        })
+        let dict = pyo3::types::PyDict::new_bound(py);
+        
+        let move_str = result.best_move.map(|m| m.to_uci()).unwrap_or_else(|| "none".to_string());
+        dict.set_item("move", move_str)?;
+        dict.set_item("score", result.score)?;
+        dict.set_item("nodes", result.nodes)?;
+        
+        Ok(dict.into())
     }
 
     fn new_game(&mut self) {
@@ -66,6 +67,14 @@ impl PyChessEngine {
 
     fn set_threads(&mut self, threads: usize) {
         self.engine.set_threads(threads);
+    }
+    
+    fn set_multi_pv(&mut self, count: usize) {
+        self.engine.set_multi_pv(count);
+    }
+    
+    fn set_hash_size(&mut self, size_mb: usize) {
+        self.engine.set_hash_size(size_mb);
     }
 
     fn stop(&mut self) {
