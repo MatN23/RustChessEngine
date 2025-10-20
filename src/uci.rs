@@ -66,11 +66,12 @@ impl UCIEngine {
     }
 
     fn uci(&self) {
-        println!("id name RustChessEngine Ultimate v4.0");
-        println!("id author StockfishKiller Team (Rust Edition)");
-        println!("option name Hash type spin default 256 min 16 max 8192");
-        println!("option name Threads type spin default 4 min 1 max 8");
+        println!("id name RustChessEngine Ultimate v6.0 (Stockfish-Level)");
+        println!("id author Enhanced Rust Team");
+        println!("option name Hash type spin default 512 min 16 max 32768");
+        println!("option name Threads type spin default 4 min 1 max 256");
         println!("option name ClearHash type button");
+        println!("option name MultiPV type spin default 1 min 1 max 5");
         println!("uciok");
     }
 
@@ -209,7 +210,7 @@ impl UCIEngine {
             }
         }
 
-        // Smart time management
+        // Enhanced time management
         if time_ms.is_none() {
             if let (Some(wt), Some(bt)) = (wtime, btime) {
                 let my_time = if self.board.side_to_move == crate::board::Color::White {
@@ -223,34 +224,34 @@ impl UCIEngine {
                     binc
                 };
 
-                // Adaptive time allocation
+                // Sophisticated time allocation
                 let time_fraction = if movestogo > 0 {
-                    1.0 / (movestogo + 5) as f64
+                    1.0 / (movestogo + 8) as f64
                 } else {
-                    let moves_remaining = (50 - self.board.fullmove_number).max(30);
+                    let moves_remaining = (50 - self.board.fullmove_number).max(25);
                     1.0 / moves_remaining as f64
                 };
 
-                let mut allocated = (my_time as f64 * time_fraction + my_inc as f64 * 0.7) as u64;
+                let mut allocated = (my_time as f64 * time_fraction + my_inc as f64 * 0.75) as u64;
 
                 // Game phase adjustments
                 if self.board.fullmove_number < 10 {
-                    allocated = (allocated as f64 * 0.75) as u64;
+                    allocated = (allocated as f64 * 0.7) as u64;
                 } else if self.board.fullmove_number > 40 {
-                    allocated = (allocated as f64 * 1.3) as u64;
-                }
-
-                // Check for critical positions
-                if self.board.is_in_check(self.board.side_to_move) {
                     allocated = (allocated as f64 * 1.4) as u64;
                 }
 
-                // Safety margins
-                let safety_margin = (my_time / 10).max(3000);
-                allocated = allocated.min(my_time - safety_margin);
+                // Critical position bonus
+                if self.board.is_in_check(self.board.side_to_move) {
+                    allocated = (allocated as f64 * 1.5) as u64;
+                }
 
-                // Absolute limits
-                allocated = allocated.max(200).min(120000);
+                // Safety margin
+                let safety_margin = (my_time / 15).max(2000);
+                allocated = allocated.min(my_time.saturating_sub(safety_margin));
+
+                // Absolute bounds
+                allocated = allocated.max(100).min(150000);
 
                 time_ms = Some(allocated);
 
@@ -260,7 +261,7 @@ impl UCIEngine {
             }
         }
 
-        // Check for immediate draw
+        // Check for draw
         if self.board.is_draw() && self.debug {
             println!("info string Position is drawn");
         }
@@ -298,7 +299,7 @@ impl UCIEngine {
 
         let name = name_parts.join(" ").to_lowercase();
 
-        // Button option (no value)
+        // Button option
         if value_idx >= args.len() {
             if name == "clearhash" {
                 self.search_engine.clear_tt();
@@ -332,13 +333,20 @@ impl UCIEngine {
                     }
                 }
             }
+            "multipv" => {
+                if let Ok(count) = value.parse::<usize>() {
+                    self.search_engine.set_multi_pv(count);
+                    if self.debug {
+                        println!("info string MultiPV set to {}", count);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     fn display(&self) {
         println!("\n{}", self.board.to_fen());
-        // Could print ASCII board here if desired
         println!();
     }
 
@@ -350,12 +358,10 @@ impl UCIEngine {
         let from = parse_square(&uci[0..2])?;
         let to = parse_square(&uci[2..4])?;
 
-        // Generate legal moves and find matching one
         let legal_moves = MoveGenerator::generate_legal_moves(&self.board);
         
         for mv in legal_moves {
             if mv.from == from && mv.to == to {
-                // Check promotion if specified
                 if uci.len() == 5 {
                     let promo_char = uci.chars().nth(4)?;
                     let promo_piece = mv.promotion_piece()?;

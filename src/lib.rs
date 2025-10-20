@@ -7,7 +7,6 @@ mod search;
 mod eval;
 mod zobrist;
 mod opening_book;
-mod uci;
 
 use board::BoardState;
 use search::SearchEngine;

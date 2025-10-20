@@ -67,7 +67,7 @@ pub fn pext_like(src: u64, mask: u64) -> u64 {
     // Software emulation of PEXT (Parallel Extract)
     // Extracts bits from src based on mask
     let mut result = 0u64;
-    let mut bb = src & mask;
+    let bb = src & mask;
     let mut m = mask;
     let mut i = 0;
     

@@ -1,6 +1,6 @@
 [package]
 name = "chess_engine"
-version = "5.0.0"
+version = "6.0.0"
 edition = "2021"
 
 [lib]
@@ -14,9 +14,14 @@ path = "src/main.rs"
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 rand = "0.8"
-rayon = "1.8"
+rayon = "1.10"
 parking_lot = "0.12"
-lazy_static = "1.4"
+lazy_static = "1.5"
+crossbeam = "0.8"
+memmap2 = "0.9"
+byteorder = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [features]
 default = ["python"]
@@ -24,7 +29,7 @@ python = ["pyo3"]
 
 [profile.release]
 opt-level = 3
-lto = true
+lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
