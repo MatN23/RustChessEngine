@@ -213,10 +213,10 @@ impl UCIEngine {
         // Enhanced time management
         if time_ms.is_none() {
             if let (Some(wt), Some(bt)) = (wtime, btime) {
-                let my_time = if self.board.side_to_move == crate::board::Color::White {
-                    wt
+                let my_time: u64 = if self.board.side_to_move == crate::board::Color::White {
+                    wt as u64
                 } else {
-                    bt
+                    bt as u64
                 };
                 let my_inc = if self.board.side_to_move == crate::board::Color::White {
                     winc
