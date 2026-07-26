@@ -12,6 +12,7 @@ name = "chess_uci"
 path = "src/main.rs"
 
 [dependencies]
+smallvec = "1.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 rand = "0.8"
 rayon = "1.10"

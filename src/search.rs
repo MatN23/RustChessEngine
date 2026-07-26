@@ -1,5 +1,5 @@
 use crate::board::{BoardState, Color, PIECE_VALUES};
-use crate::movegen::{Move, MoveGenerator};
+use crate::movegen::{Move, MoveGenerator, MoveList};
 use crate::eval::Evaluator;
 use crate::opening_book;
 use parking_lot::{Mutex, RwLock};
@@ -41,6 +41,7 @@ pub struct SearchEngine {
     nodes: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     multi_pv: usize,
+    pub contempt: i32,
     
     // Per-thread data
     thread_data: Arc<Vec<Mutex<ThreadData>>>,
@@ -91,6 +92,7 @@ impl SearchEngine {
             nodes: Arc::new(AtomicU64::new(0)),
             stop: Arc::new(AtomicBool::new(false)),
             multi_pv: 1,
+            contempt: 20,
             thread_data: Arc::new(thread_data),
         }
     }
@@ -141,7 +143,7 @@ impl SearchEngine {
                 break;
             }
 
-            let soft_limit = time_limit.map(|t| t.mul_f64(0.4));
+            let soft_limit = time_limit.map(|t| t.mul_f64(0.5));
             let hard_limit = time_limit;
 
             let (score, mv, pv) = if depth >= 5 {
@@ -172,52 +174,65 @@ impl SearchEngine {
                 best_move = Some(m);
                 best_score = score;
                 prev_score = score;
+            } else if depth == 1 {
+                // For mate/stalemate, we must still respect the score
+                best_score = score;
+            }
 
-                let elapsed_ms = start_time.elapsed().as_millis();
-                let nodes = self.nodes.load(Ordering::Relaxed);
-                let nps = if elapsed_ms > 0 {
-                    (nodes as u128 * 1000 / elapsed_ms) as u64
-                } else {
-                    0
-                };
+            let elapsed_ms = start_time.elapsed().as_millis();
+            let nodes = self.nodes.load(Ordering::Relaxed);
+            let nps = if elapsed_ms > 0 {
+                (nodes as u128 * 1000 / elapsed_ms) as u64
+            } else {
+                0
+            };
 
-                let mut pv_str = String::new();
-                for pv_move in pv.iter().take(10) {
-                    pv_str.push_str(&format!("{} ", pv_move.to_uci()));
-                }
+            let mut pv_str = String::new();
+            for pv_move in pv.iter().take(10) {
+                pv_str.push_str(&format!("{} ", pv_move.to_uci()));
+            }
 
-                if score.abs() > MATE_SCORE - 100 {
-                    let mate_in = (MATE_SCORE - score.abs() + 1) / 2;
-                    println!(
-                        "info depth {} score mate {} nodes {} nps {} time {} pv {}",
-                        depth,
-                        if score > 0 { mate_in } else { -mate_in },
-                        nodes,
-                        nps,
-                        elapsed_ms,
-                        pv_str.trim()
-                    );
-                } else {
-                    println!(
-                        "info depth {} score cp {} nodes {} nps {} time {} pv {}",
-                        depth, score, nodes, nps, elapsed_ms, pv_str.trim()
-                    );
-                }
+            if score.abs() > MATE_SCORE - 100 {
+                let mate_in = (MATE_SCORE - score.abs() + 1) / 2;
+                println!(
+                    "info depth {} score mate {} nodes {} nps {} time {} pv {}",
+                    depth,
+                    if score > 0 { mate_in } else { -mate_in },
+                    nodes,
+                    nps,
+                    elapsed_ms,
+                    pv_str.trim()
+                );
+            } else {
+                println!(
+                    "info depth {} score cp {} nodes {} nps {} time {} pv {}",
+                    depth, score, nodes, nps, elapsed_ms, pv_str.trim()
+                );
+            }
 
-                // Smart time management
-                if let Some(soft) = soft_limit {
-                    if start_time.elapsed() > soft {
-                        let time_ratio = start_time.elapsed().as_millis() as f64 / soft.as_millis() as f64;
-                        
-                        if score < -500 || (time_ratio > 1.5 && score_drop.abs() < 30) {
+            // Smart time management: only stop early if score is very stable
+            if let Some(soft) = soft_limit {
+                let elapsed = start_time.elapsed();
+                if elapsed > soft {
+                    let time_ratio = elapsed.as_millis() as f64 / soft.as_millis() as f64;
+                    
+                    // In desperate positions, always keep thinking if time allows
+                    // Only exit early if score is stable AND we've used a lot of time
+                    let score_stable = (prev_score - score).abs() < 20;
+                    if score < -500 {
+                        // Losing badly: keep searching for a swindle unless almost out of time
+                        if time_ratio > 1.8 {
                             break;
                         }
+                    } else if time_ratio > 1.6 && score_stable {
+                        // Score is very stable and we've used plenty of time
+                        break;
                     }
                 }
             }
 
             if let Some(hard) = hard_limit {
-                if start_time.elapsed() > hard.mul_f64(0.9) {
+                if start_time.elapsed() > hard.mul_f64(0.95) {
                     break;
                 }
             }
@@ -239,7 +254,7 @@ impl SearchEngine {
         start_time: Instant,
         soft_limit: Option<Duration>,
         hard_limit: Option<Duration>,
-    ) -> (i32, Option<Move>, Vec<Move>) {
+    ) -> (i32, Option<Move>, MoveList) {
         let mut window = 50;
         let mut alpha = prev_score - window;
         let mut beta = prev_score + window;
@@ -286,19 +301,26 @@ impl SearchEngine {
         start_time: Instant,
         soft_limit: Option<Duration>,
         hard_limit: Option<Duration>,
-    ) -> (i32, Option<Move>, Vec<Move>) {
+    ) -> (i32, Option<Move>, MoveList) {
         let mut moves = MoveGenerator::generate_legal_moves(board);
 
         if moves.is_empty() {
             return if board.is_in_check(board.side_to_move) {
-                (-MATE_SCORE, None, vec![])
+                (-MATE_SCORE, None, MoveList::new())
             } else {
-                (0, None, vec![])
+                (-self.contempt, None, MoveList::new())
             };
         }
 
+        // If only one move is available, we still want a score for aspiration windows
         if moves.len() == 1 {
-            return (0, Some(moves[0]), vec![moves[0]]);
+            let mut new_board = board.clone();
+            new_board.make_move(&moves[0]);
+            let mut thread_data = self.thread_data[0].lock();
+            let score = -self.pvs(&new_board, depth.saturating_sub(1), -beta, -alpha, 1, true, 0, start_time, soft_limit, hard_limit, &mut thread_data);
+            let mut pv = MoveList::new();
+            pv.push(moves[0]);
+            return (score, Some(moves[0]), pv);
         }
 
         // Order moves using main thread data
@@ -308,7 +330,7 @@ impl SearchEngine {
 
         let mut best_move = None;
         let mut best_score = -INFINITY;
-        let mut best_pv = Vec::new();
+        let mut best_pv = MoveList::new();
 
         // Lazy SMP: Launch parallel search on multiple threads
         if self.threads > 1 && depth >= 6 {
@@ -316,7 +338,7 @@ impl SearchEngine {
                 .into_par_iter()
                 .map(|thread_id| {
                     if self.stop.load(Ordering::Relaxed) {
-                        return (-INFINITY, None, vec![]);
+                        return (-INFINITY, None, MoveList::new());
                     }
 
                     let depth_variation = if thread_id > 0 {
@@ -378,14 +400,14 @@ impl SearchEngine {
         start_time: Instant,
         soft_limit: Option<Duration>,
         hard_limit: Option<Duration>,
-    ) -> (i32, Option<Move>, Vec<Move>) {
+    ) -> (i32, Option<Move>, MoveList) {
         let mut moves = MoveGenerator::generate_legal_moves(board);
         let mut thread_data = self.thread_data[thread_id].lock();
         self.order_moves_internal(board, &mut moves, None, 0, &mut thread_data);
         
         let mut best_move = None;
         let mut best_score = -INFINITY;
-        let mut best_pv = Vec::new();
+        let mut best_pv = MoveList::new();
         let mut move_count = 0;
 
         for mv in moves {
@@ -473,9 +495,13 @@ impl SearchEngine {
             return 0;
         }
 
+        if ply >= MAX_PLY - 1 {
+            return Evaluator::evaluate(board);
+        }
+
         // Draw detection
         if board.halfmove_clock >= 100 || board.is_repetition() {
-            return 0;
+            return -self.contempt;
         }
 
         // Mate distance pruning
@@ -486,11 +512,11 @@ impl SearchEngine {
         }
 
         let in_check = board.is_in_check(board.side_to_move);
-        let mut depth = depth;
+        let mut depth = depth; 
 
-        // Check extension
+        // In-check extension for tactical stability
         if in_check {
-            depth = depth.saturating_add(1);
+            depth += 1;
         }
 
         // Quiescence at leaf nodes
@@ -577,7 +603,7 @@ impl SearchEngine {
             return if in_check {
                 -MATE_SCORE + ply as i32
             } else {
-                0
+                -self.contempt
             };
         }
 
@@ -587,7 +613,7 @@ impl SearchEngine {
         let mut best_move = None;
         let mut move_count = 0;
         let alpha_orig = alpha;
-        let mut quiets_tried: Vec<Move> = Vec::new();
+        let mut quiets_tried: MoveList = MoveList::with_capacity(48);
 
         thread_data.pv_length[ply] = 0;
 
@@ -596,10 +622,36 @@ impl SearchEngine {
                 break;
             }
 
+            // Late Move Pruning (LMP) for quiet moves in non-PV nodes
+            if !pv_node && !in_check && depth <= 3 && move_count > (3 + 2 * depth as usize) && !mv.is_capture() && !mv.is_promotion() {
+                let h = thread_data.history_table[mv.from as usize][mv.to as usize];
+                if h < 2000 {
+                    move_count += 1;
+                    continue;
+                }
+            }
+
+            // SEE pruning for quiet moves: don't play moves that walk into danger
+            if !pv_node && !in_check && depth <= 7 && move_count > 0 && !mv.is_capture() && !mv.is_promotion() {
+                if !self.see_capture(board, &mv, -(depth as i32 * 20)) {
+                    move_count += 1;
+                    continue;
+                }
+            }
+
+            // History pruning: skip quiet moves with very bad history at shallow depths
+            if !pv_node && !in_check && depth <= 5 && move_count > 3 && !mv.is_capture() && !mv.is_promotion() {
+                let h = thread_data.history_table[mv.from as usize][mv.to as usize];
+                if h < -(depth as i32 * depth as i32 * 100) {
+                    move_count += 1;
+                    continue;
+                }
+            }
+
             let mut new_board = board.clone();
             new_board.make_move(&mv);
 
-            // Futility pruning
+            // Futility pruning (tightened margins)
             let futile = !in_check
                 && !new_board.is_in_check(new_board.side_to_move)
                 && !mv.is_capture()
@@ -608,7 +660,7 @@ impl SearchEngine {
                 && depth <= 6;
 
             if futile {
-                let futility_margin = 150 + 130 * depth as i32;
+                let futility_margin = 120 + 100 * depth as i32;
                 if static_eval + futility_margin <= alpha {
                     move_count += 1;
                     continue;
@@ -718,7 +770,10 @@ impl SearchEngine {
                     }
                 }
 
-                self.tt.write().store(board.hash, depth, beta_new, TT_BETA, Some(mv));
+                // Reduce TT traffic: only store reasonably deep entries
+                if depth >= 2 || ply == 0 {
+                    self.tt.write().store(board.hash, depth, beta_new, TT_BETA, Some(mv));
+                }
                 return beta_new;
             }
 
@@ -733,44 +788,59 @@ impl SearchEngine {
             TT_EXACT
         };
 
-        self.tt.write().store(board.hash, depth, best_score, flag, best_move);
+        // Reduce TT traffic for shallow nodes
+        if depth >= 2 || ply == 0 {
+            self.tt.write().store(board.hash, depth, best_score, flag, best_move);
+        }
         best_score
     }
 
     fn quiescence(&self, board: &BoardState, mut alpha: i32, beta: i32, depth: i8, thread_data: &mut ThreadData) -> i32 {
         thread_data.nodes_searched += 1;
 
-        if depth < -10 {
+        if depth < -16 {
             return Evaluator::evaluate(board);
         }
 
-        let stand_pat = Evaluator::evaluate(board);
+        let in_check = board.is_in_check(board.side_to_move);
+        let stand_pat = if in_check { -INFINITY } else { Evaluator::evaluate(board) };
 
-        if stand_pat >= beta {
-            return beta;
+        if !in_check {
+            if stand_pat >= beta {
+                return beta;
+            }
+
+            // Delta pruning
+            let delta = 800;
+            if stand_pat + delta < alpha {
+                return alpha;
+            }
+
+            if stand_pat > alpha {
+                alpha = stand_pat;
+            }
         }
 
-        // Delta pruning
-        let delta = 950;
-        if stand_pat + delta < alpha {
-            return alpha;
+        let mut moves = if in_check {
+            MoveGenerator::generate_legal_moves(board)
+        } else {
+            MoveGenerator::generate_captures(board)
+        };
+
+        if moves.is_empty() {
+            if in_check {
+                return -MATE_SCORE;
+            } else {
+                return stand_pat;
+            }
         }
 
-        if stand_pat > alpha {
-            alpha = stand_pat;
-        }
+        self.order_captures_internal(board, &mut moves);
 
-        let mut captures = MoveGenerator::generate_captures(board);
-
-        if captures.is_empty() {
-            return stand_pat;
-        }
-
-        self.order_captures_internal(board, &mut captures);
-
-        for mv in captures {
-            // Delta pruning with SEE
-            if depth < -4 && !self.see_capture(board, &mv, 0) {
+        for mv in moves {
+            // SEE pruning in QS: immediately prune captures that lose material statically.
+            // This is critical for tactical stability and search efficiency.
+            if !in_check && !self.see_capture(board, &mv, 0) {
                 continue;
             }
 
@@ -791,15 +861,20 @@ impl SearchEngine {
         alpha
     }
 
-    fn order_moves_internal(&self, board: &BoardState, moves: &mut Vec<Move>, tt_move: Option<Move>, ply: usize, thread_data: &mut ThreadData) {
+    #[inline(always)]
+fn order_moves_internal(&self, board: &BoardState, moves: &mut MoveList, tt_move: Option<Move>, ply: usize, thread_data: &mut ThreadData) {
         let killers = thread_data.killer_moves[ply];
         let history = &thread_data.history_table;
 
-        moves.sort_by_cached_key(|mv| {
-            -self.score_move_internal(board, mv, tt_move, &killers, history)
+        // Use comparator-based unstable sort to avoid key allocations and negation.
+        moves.sort_unstable_by(|a, b| {
+            let sa = self.score_move_internal(board, a, tt_move, &killers, history);
+            let sb = self.score_move_internal(board, b, tt_move, &killers, history);
+            sb.cmp(&sa)
         });
     }
 
+    #[inline(always)]
     fn score_move_internal(&self, board: &BoardState, mv: &Move, tt_move: Option<Move>, killers: &[Option<Move>; 2], history: &[[i32; 64]; 64]) -> i32 {
         // TT move has highest priority
         if let Some(hash_mv) = tt_move {
@@ -808,14 +883,15 @@ impl SearchEngine {
             }
         }
 
-        // Winning captures (MVV-LVA)
+        // Captures (MVV-LVA + SEE)
         if mv.is_capture() {
-            let mut score = 9_000_000 + self.mvv_lva_score(board, mv);
-            // Bonus for captures that pass SEE
             if self.see_capture(board, mv, 0) {
-                score += 100_000;
+                // Good or equal captures: high priority
+                return 9_000_000 + self.mvv_lva_score(board, mv);
+            } else {
+                // Losing captures: dead last priority (below worst quiet moves)
+                return -200_000 + self.mvv_lva_score(board, mv);
             }
-            return score;
         }
 
         // Promotions
@@ -847,6 +923,7 @@ impl SearchEngine {
         history[mv.from as usize][mv.to as usize].clamp(-10_000, 10_000)
     }
 
+    #[inline(always)]
     fn mvv_lva_score(&self, board: &BoardState, mv: &Move) -> i32 {
         let victim = if let Some((piece, _)) = board.piece_at(mv.to) {
             PIECE_VALUES[piece as usize]
@@ -864,39 +941,26 @@ impl SearchEngine {
         victim * 10 - attacker / 10
     }
 
-    fn order_captures_internal(&self, board: &BoardState, captures: &mut Vec<Move>) {
-        captures.sort_by_cached_key(|mv| {
-            let mut score = -self.mvv_lva_score(board, mv);
-            // Prioritize captures that pass SEE
-            if self.see_capture(board, mv, 0) {
-                score -= 100_000;
-            }
-            score
+    #[inline(always)]
+fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
+        // Comparator-based unstable sort
+        captures.sort_unstable_by(|a, b| {
+            let mut sa = -self.mvv_lva_score(board, a);
+            if self.see_capture(board, a, 0) { sa -= 100_000; }
+
+            let mut sb = -self.mvv_lva_score(board, b);
+            if self.see_capture(board, b, 0) { sb -= 100_000; }
+
+            sa.cmp(&sb)
         });
     }
 
+    #[inline(always)]
     fn see_capture(&self, board: &BoardState, mv: &Move, threshold: i32) -> bool {
-        if !mv.is_capture() {
-            return true;
-        }
-
-        let victim_value = if let Some((piece, _)) = board.piece_at(mv.to) {
-            PIECE_VALUES[piece as usize]
-        } else {
-            100 // En passant
-        };
-
-        let attacker_value = if let Some((piece, _)) = board.piece_at(mv.from) {
-            PIECE_VALUES[piece as usize]
-        } else {
-            0
-        };
-
-        // Simple SEE approximation
-        let gain = victim_value - attacker_value;
-        gain >= threshold
+        Evaluator::see_capture(board, mv, threshold)
     }
 
+    #[inline(always)]
     fn update_killers_internal(&self, mv: Move, ply: usize, thread_data: &mut ThreadData) {
         if ply >= MAX_PLY {
             return;
@@ -916,11 +980,13 @@ impl SearchEngine {
         ply_killers[0] = Some(mv);
     }
 
+    #[inline(always)]
     fn update_history_internal(&self, mv: Move, depth: u8, thread_data: &mut ThreadData) {
         let bonus = (depth as i32) * (depth as i32);
         self.update_history_raw_internal(mv, bonus, thread_data);
     }
 
+    #[inline(always)]
     fn update_history_raw_internal(&self, mv: Move, delta: i32, thread_data: &mut ThreadData) {
         let entry = &mut thread_data.history_table[mv.from as usize][mv.to as usize];
         *entry += delta;
@@ -935,6 +1001,7 @@ impl SearchEngine {
         }
     }
 
+    #[inline(always)]
     fn check_time_abort(&self, start_time: Instant, _soft_limit: Option<Duration>, hard_limit: Option<Duration>) -> bool {
         if self.stop.load(Ordering::Relaxed) {
             return true;
@@ -1100,7 +1167,9 @@ mod tests {
 
     #[test]
     fn test_search_parallel() {
-        let board = BoardState::default();
+        // Use a FEN that is NOT in the opening book by changing the move counters
+        let fen = "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 10";
+        let board = BoardState::from_fen(fen).unwrap();
         let mut engine = SearchEngine::new(4);
         let result = engine.search(board, 5, None);
         assert!(result.best_move.is_some());

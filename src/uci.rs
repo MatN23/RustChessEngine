@@ -72,6 +72,7 @@ impl UCIEngine {
         println!("option name Threads type spin default 4 min 1 max 256");
         println!("option name ClearHash type button");
         println!("option name MultiPV type spin default 1 min 1 max 5");
+        println!("option name Contempt type spin default 20 min -100 max 100");
         println!("uciok");
     }
 
@@ -224,21 +225,34 @@ impl UCIEngine {
                     binc
                 };
 
-                // Sophisticated time allocation
-                let time_fraction = if movestogo > 0 {
-                    1.0 / (movestogo + 8) as f64
+                // Sophisticated time allocation with deep-thinking support
+                let base_fraction = if movestogo > 0 {
+                    1.0 / (movestogo + 5) as f64
                 } else {
-                    let moves_remaining = (50 - self.board.fullmove_number).max(25);
+                    let moves_remaining = (50 - self.board.fullmove_number).max(20);
                     1.0 / moves_remaining as f64
                 };
 
-                let mut allocated = (my_time as f64 * time_fraction + my_inc as f64 * 0.75) as u64;
+                let mut allocated = (my_time as f64 * base_fraction + my_inc as f64 * 0.85) as u64;
+
+                // Abundance factor: when we have lots of time, think much deeper.
+                // This scales logarithmically so e.g. 10min pool => ~2.5x, 30min => ~3.2x, 60min => ~3.7x
+                if my_time > 30_000 {
+                    let abundance = (my_time as f64 / 30_000.0).ln() * 0.8 + 1.0;
+                    allocated = (allocated as f64 * abundance) as u64;
+                }
 
                 // Game phase adjustments
-                if self.board.fullmove_number < 10 {
-                    allocated = (allocated as f64 * 0.7) as u64;
-                } else if self.board.fullmove_number > 40 {
-                    allocated = (allocated as f64 * 1.4) as u64;
+                let move_num = self.board.fullmove_number;
+                if move_num < 8 {
+                    // Opening: spend less time (book moves, known theory)
+                    allocated = (allocated as f64 * 0.6) as u64;
+                } else if move_num >= 12 && move_num <= 35 {
+                    // Critical midgame: spend more time for complex tactical positions
+                    allocated = (allocated as f64 * 1.5) as u64;
+                } else if move_num > 40 {
+                    // Late game: moderate increase for endgame precision
+                    allocated = (allocated as f64 * 1.3) as u64;
                 }
 
                 // Critical position bonus
@@ -246,12 +260,12 @@ impl UCIEngine {
                     allocated = (allocated as f64 * 1.5) as u64;
                 }
 
-                // Safety margin
-                let safety_margin = (my_time / 15).max(2000);
+                // Safety margin: never use more than 80% of remaining time
+                let safety_margin = (my_time / 5).max(1000);
                 allocated = allocated.min(my_time.saturating_sub(safety_margin));
 
-                // Absolute bounds
-                allocated = allocated.max(100).min(150000);
+                // Minimum time floor (never think less than 200ms)
+                allocated = allocated.max(200);
 
                 time_ms = Some(allocated);
 
@@ -338,6 +352,14 @@ impl UCIEngine {
                     self.search_engine.set_multi_pv(count);
                     if self.debug {
                         println!("info string MultiPV set to {}", count);
+                    }
+                }
+            }
+            "contempt" => {
+                if let Ok(contempt) = value.parse::<i32>() {
+                    self.search_engine.contempt = contempt;
+                    if self.debug {
+                        println!("info string Contempt set to {}", contempt);
                     }
                 }
             }

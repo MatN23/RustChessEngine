@@ -1,0 +1,14 @@
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/deps/serde-929951371c276edf.d: /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/build/serde-55abb493d1b195a8/out/private.rs
+
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/deps/libserde-929951371c276edf.rlib: /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/build/serde-55abb493d1b195a8/out/private.rs
+
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/deps/libserde-929951371c276edf.rmeta: /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/build/serde-55abb493d1b195a8/out/private.rs
+
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/build/serde-55abb493d1b195a8/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/matias/Documents/Projects/AI/RustChessEngine/target/debug/build/serde-55abb493d1b195a8/out

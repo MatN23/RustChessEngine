@@ -1,7 +1,7 @@
 use crate::bitboard::*;
 use crate::zobrist::ZOBRIST;
 use crate::movegen::{Move, CAPTURE, EP_CAPTURE, DOUBLE_PAWN_PUSH, KING_CASTLE, QUEEN_CASTLE};
-use std::collections::VecDeque;
+use smallvec::SmallVec;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(usize)]
@@ -43,7 +43,7 @@ pub struct BoardState {
     pub halfmove_clock: u16,
     pub fullmove_number: u16,
     pub hash: u64,
-    pub position_history: VecDeque<u64>,
+    pub position_history: SmallVec<[u64; 128]>,
 }
 
 impl Default for BoardState {
@@ -70,7 +70,7 @@ impl BoardState {
             halfmove_clock: 0,
             fullmove_number: 1,
             hash: 0,
-            position_history: VecDeque::with_capacity(100),
+            position_history: SmallVec::new(),
         };
 
         // Parse piece placement
@@ -131,7 +131,7 @@ impl BoardState {
         }
 
         board.hash = board.compute_hash();
-        board.position_history.push_back(board.hash);
+        board.position_history.push(board.hash);
 
         Ok(board)
     }
@@ -288,19 +288,47 @@ impl BoardState {
     fn is_insufficient_material(&self) -> bool {
         let total_pieces = count_bits(self.all_pieces);
         
+        // K vs K
         if total_pieces == 2 {
             return true;
         }
 
-        if total_pieces == 3 {
-            let white_minor = count_bits(self.pieces[0][Piece::Knight as usize]) +
-                             count_bits(self.pieces[0][Piece::Bishop as usize]);
-            let black_minor = count_bits(self.pieces[1][Piece::Knight as usize]) +
-                             count_bits(self.pieces[1][Piece::Bishop as usize]);
+        let white_knights = count_bits(self.pieces[0][Piece::Knight as usize]);
+        let black_knights = count_bits(self.pieces[1][Piece::Knight as usize]);
+        let white_bishops = count_bits(self.pieces[0][Piece::Bishop as usize]);
+        let black_bishops = count_bits(self.pieces[1][Piece::Bishop as usize]);
+        let white_minors = white_knights + white_bishops;
+        let black_minors = black_knights + black_bishops;
+        let total_minors = white_minors + black_minors;
+
+        // No pawns, queens, or rooks
+        let major_material = count_bits(self.pieces[0][Piece::Pawn as usize] | self.pieces[1][Piece::Pawn as usize] |
+                                      self.pieces[0][Piece::Rook as usize] | self.pieces[1][Piece::Rook as usize] |
+                                      self.pieces[0][Piece::Queen as usize] | self.pieces[1][Piece::Queen as usize]);
+        
+        if major_material > 0 {
+            return false;
+        }
+
+        // K+M vs K
+        if total_pieces == 3 && total_minors == 1 {
+            return true;
+        }
+
+        // K+B vs K+B
+        if total_pieces == 4 && white_bishops == 1 && black_bishops == 1 {
+            let white_bishop_sq = lsb(self.pieces[0][Piece::Bishop as usize]).unwrap();
+            let black_bishop_sq = lsb(self.pieces[1][Piece::Bishop as usize]).unwrap();
             
-            if white_minor == 1 || black_minor == 1 {
+            // Check if bishops are on the same color
+            if is_light_square(white_bishop_sq) == is_light_square(black_bishop_sq) {
                 return true;
             }
+        }
+
+        // K+N+N vs K (Technically not a forced draw by FIDE but practically drawn in most engines)
+        if total_pieces == 4 && (white_knights == 2 || black_knights == 2) && total_minors == 2 {
+            return true;
         }
 
         false
@@ -456,7 +484,7 @@ impl BoardState {
         }
 
         // Add to position history
-        self.position_history.push_back(self.hash);
+        self.position_history.push(self.hash);
     }
 
     pub fn make_move_uci(&mut self, uci: &str) -> Result<bool, String> {

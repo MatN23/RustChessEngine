@@ -1,0 +1,14 @@
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/deps/pyo3_build_config-86467b57fad1c311.d: /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/lib.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/errors.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/impl_.rs /Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config-file.txt /Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config.txt
+
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/deps/libpyo3_build_config-86467b57fad1c311.rlib: /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/lib.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/errors.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/impl_.rs /Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config-file.txt /Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config.txt
+
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/deps/libpyo3_build_config-86467b57fad1c311.rmeta: /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/lib.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/errors.rs /Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/impl_.rs /Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config-file.txt /Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config.txt
+
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/lib.rs:
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/errors.rs:
+/Users/matias/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-build-config-0.22.6/src/impl_.rs:
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config-file.txt:
+/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out/pyo3-build-config.txt:
+
+# env-dep:CARGO_PKG_VERSION=0.22.6
+# env-dep:OUT_DIR=/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/build/pyo3-build-config-60dd460ec39242f9/out

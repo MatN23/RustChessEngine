@@ -408,3 +408,10 @@ pub fn fill_south(mut bb: Bitboard, empty: Bitboard) -> Bitboard {
     bb |= empty & (bb >> 32);
     bb
 }
+
+#[inline(always)]
+pub fn is_light_square(sq: u8) -> bool {
+    let rank = sq / 8;
+    let file = sq % 8;
+    (rank + file) % 2 != 0
+}

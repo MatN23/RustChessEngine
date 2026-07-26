@@ -37,6 +37,10 @@ class LichessBot:
         self.active_games = {}
         self.move_overhead = 300  # Network latency buffer
         
+        # Pondering state
+        self.ponder_thread = None
+        self.is_pondering = False
+        
         print(f"✓ Engine ready!")
         print(f"  Threads: {threads}")
         print(f"  Hash: {hash_mb} MB")
@@ -79,8 +83,14 @@ class LichessBot:
                     for line in response.iter_lines():
                         if line:
                             try:
-                                event = json.loads(line.decode('utf-8'))
+                                decoded_line = line.decode('utf-8').strip()
+                                if not decoded_line:
+                                    continue
+                                event = json.loads(decoded_line)
                                 self.process_event(event)
+                            except json.JSONDecodeError:
+                                # Ignore heartbeat lines (\n)
+                                continue
                             except Exception as e:
                                 print(f"Error processing event: {e}")
             except requests.exceptions.RequestException as e:
@@ -97,9 +107,14 @@ class LichessBot:
         
         elif event_type == 'gameStart':
             game_id = event['game']['id']
+            if game_id in self.active_games:
+                return
+                
             print(f"\n{'='*60}")
             print(f"Game started: {game_id}")
             print(f"{'='*60}")
+            
+            self.active_games[game_id] = True
             game_thread = threading.Thread(
                 target=self.play_game,
                 args=(game_id,),
@@ -144,61 +159,91 @@ class LichessBot:
         
         print(f"Playing: {self.base_url}/{game_id}")
         
-        try:
-            with requests.get(url, headers=self.headers, stream=True, timeout=30) as response:
-                if response.status_code != 200:
-                    print(f"Error connecting: {response.status_code}")
-                    return
-                
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            event = json.loads(line.decode('utf-8'))
-                            event_type = event.get('type')
-                            
-                            if not event_type:
-                                continue
-                            
-                            if event_type == 'gameFull':
-                                current_fen = self.setup_game(event)
-                                
-                                account = self.get_account()
-                                white_id = event.get('white', {}).get('id', '').lower()
-                                my_id = account.get('id', '').lower()
-                                
-                                my_color = 'white' if white_id == my_id else 'black'
-                                
-                                print(f"  Playing as {my_color.upper()}")
-                                print(f"  White: {event.get('white', {}).get('name', 'Unknown')} ({event.get('white', {}).get('rating', '?')})")
-                                print(f"  Black: {event.get('black', {}).get('name', 'Unknown')} ({event.get('black', {}).get('rating', '?')})")
-                                
-                                if my_color == 'white' and event['state']['moves'] == '':
-                                    self.make_move(game_id, current_fen, event['state'], my_color, move_times)
-                            
-                            elif event_type == 'gameState':
-                                current_fen = self.update_position(current_fen, event)
-                                self.make_move(game_id, current_fen, event, my_color, move_times)
-                            
-                            elif event_type == 'chatLine':
-                                username = event.get('username', 'unknown')
-                                text = event.get('text', '')
-                                print(f"💬 {username}: {text}")
-                            
-                            elif event_type == 'gameFinish':
-                                print(f"Game finished!")
-                                break
-                                
-                        except json.JSONDecodeError:
-                            continue
-                        except Exception as e:
-                            print(f"Error processing event: {e}")
-                            
-        except requests.exceptions.RequestException as e:
-            print(f"Connection error: {e}")
-        except Exception as e:
-            print(f"Unexpected error: {e}")
+        backoff = 1
+        max_retries = 5
         
-        print(f"Game {game_id} complete\n")
+        for attempt in range(max_retries):
+            try:
+                with requests.get(url, headers=self.headers, stream=True, timeout=30) as response:
+                    if response.status_code == 429:
+                        print(f"Rate limited (429) on {game_id}. Waiting {backoff}s...")
+                        time.sleep(backoff)
+                        backoff *= 2
+                        continue
+                        
+                    if response.status_code != 200:
+                        print(f"Error connecting: {response.status_code}")
+                        break
+                    
+                    # Connection successful, reset backoff for inner loop
+                    backoff = 1
+                    
+                    for line in response.iter_lines():
+                        if line:
+                            try:
+                                decoded_line = line.decode('utf-8').strip()
+                                if not decoded_line:
+                                    continue
+                                    
+                                event = json.loads(decoded_line)
+                                event_type = event.get('type')
+                                
+                                if not event_type:
+                                    continue
+                                
+                                if event_type == 'gameFull':
+                                    self.stop_pondering()
+                                    current_fen = self.setup_game(event)
+                                    
+                                    account = self.get_account()
+                                    white_id = event.get('white', {}).get('id', '').lower()
+                                    my_id = account.get('id', '').lower()
+                                    
+                                    my_color = 'white' if white_id == my_id else 'black'
+                                    
+                                    print(f"  Playing as {my_color.upper()}")
+                                    print(f"  White: {event.get('white', {}).get('name', 'Unknown')} ({event.get('white', {}).get('rating', '?')})")
+                                    print(f"  Black: {event.get('black', {}).get('name', 'Unknown')} ({event.get('black', {}).get('rating', '?')})")
+                                    
+                                    if my_color == 'white' and event['state']['moves'] == '':
+                                        self.make_move(game_id, current_fen, event['state'], my_color, move_times)
+                                
+                                elif event_type == 'gameState':
+                                    self.stop_pondering()
+                                    current_fen = self.update_position(current_fen, event)
+                                    self.make_move(game_id, current_fen, event, my_color, move_times)
+                                
+                                elif event_type == 'chatLine':
+                                    username = event.get('username', 'unknown')
+                                    text = event.get('text', '')
+                                    print(f"💬 {username}: {text}")
+                                
+                                elif event_type == 'gameFinish':
+                                    self.stop_pondering()
+                                    print(f"Game finished!")
+                                    if game_id in self.active_games:
+                                        del self.active_games[game_id]
+                                    return
+                                    
+                            except json.JSONDecodeError:
+                                continue
+                            except Exception as e:
+                                print(f"Error processing event: {e}")
+                    
+                    # If we reach here, the stream closed normally or due to timeout
+                    break
+                            
+            except requests.exceptions.RequestException as e:
+                print(f"Connection error on attempt {attempt+1}: {e}")
+                time.sleep(backoff)
+                backoff *= 2
+            except Exception as e:
+                print(f"Unexpected error: {e}")
+                break
+        
+        if game_id in self.active_games:
+            del self.active_games[game_id]
+        print(f"Game {game_id} thread complete\n")
     
     def setup_game(self, game_full):
         """Setup board from game start"""
@@ -312,6 +357,15 @@ class LichessBot:
             print(f"{'='*60}\n")
             
             self.send_move(game_id, best_move)
+            
+            # Opponent's turn now -> start pondering their move
+            try:
+                sim_board = chess_engine.PyBoardState(fen)
+                sim_board.make_move(best_move)
+                self.start_pondering(sim_board.to_fen())
+            except Exception as e:
+                print(f"Pondering setup failed: {e}")
+                
         else:
             print("No legal moves (game over)")
             print(f"{'='*60}\n")
@@ -362,6 +416,53 @@ class LichessBot:
         
         if response.status_code != 200:
             print(f"Error sending move: {response.text}")
+
+    def stop_pondering(self):
+        """Stop any ongoing pondering search."""
+        if self.is_pondering:
+            self.is_pondering = False
+            self.engine.stop()  # Interrupt the rust engine gracefully
+            if self.ponder_thread and self.ponder_thread.is_alive():
+                self.ponder_thread.join(timeout=1.0)
+            self.ponder_thread = None
+
+    def start_pondering(self, fen):
+        """Spawn a thread to ponder on the opponent's time."""
+        self.stop_pondering()
+        self.is_pondering = True
+        self.ponder_thread = threading.Thread(target=self.ponder_worker, args=(fen,), daemon=True)
+        self.ponder_thread.start()
+
+    def ponder_worker(self, fen):
+        """The pondering process."""
+        try:
+            # Step 1: Quickly predict opponent's move (depth 6 is very fast)
+            if not self.is_pondering: return
+            result = self.engine.search(fen, depth=6, time_ms=None)
+            opponent_move = result.get('move')
+            
+            if not opponent_move or opponent_move == 'none' or not self.is_pondering:
+                return
+                
+            # Step 2: Apply the predicted move
+            board = chess_engine.PyBoardState(fen)
+            board.make_move(opponent_move)
+            new_fen = board.to_fen()
+            
+            # Step 3: Search our response heavily to warm the TT cache
+            if not self.is_pondering: return
+            print(f"💭 Pondering opponent's likely move: {opponent_move}...")
+            
+            # We give it a long time to think (20 seconds max)
+            # This search will be interrupted by engine.stop() when opponent actually moves!
+            # Since the TT is global to the engine instance, all calculations are preserved!
+            self.engine.search(new_fen, depth=None, time_ms=20000)
+            
+        except Exception:
+            # Pondering was interrupted or failed organically
+            pass
+        finally:
+            self.is_pondering = False
 
 
 def main():

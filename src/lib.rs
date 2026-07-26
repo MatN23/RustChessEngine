@@ -1,3 +1,4 @@
+#![cfg(feature = "python")]
 use pyo3::prelude::*;
 
 mod board;
@@ -74,6 +75,10 @@ impl PyChessEngine {
     
     fn set_hash_size(&mut self, size_mb: usize) {
         self.engine.set_hash_size(size_mb);
+    }
+    
+    fn set_contempt(&mut self, contempt: i32) {
+        self.engine.contempt = contempt;
     }
 
     fn stop(&mut self) {

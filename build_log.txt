@@ -1,0 +1,457 @@
+   Compiling chess_engine v6.0.0 (/Users/matias/Documents/Projects/AI/RustChessEngine)
+warning: variant `Empty` is never constructed
+ --> src/board.rs:9:5
+  |
+8 | pub enum Piece {
+  |          ----- variant in this enum
+9 |     Empty = 0,
+  |     ^^^^^
+  |
+  = note: `Piece` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `EMPTY` is never used
+ --> src/bitboard.rs:3:11
+  |
+3 | pub const EMPTY: Bitboard = 0;
+  |           ^^^^^
+
+warning: constant `FULL` is never used
+ --> src/bitboard.rs:4:11
+  |
+4 | pub const FULL: Bitboard = 0xFFFFFFFFFFFFFFFF;
+  |           ^^^^
+
+warning: constant `FILE_B` is never used
+ --> src/bitboard.rs:8:11
+  |
+8 | pub const FILE_B: Bitboard = 0x0202020202020202;
+  |           ^^^^^^
+
+warning: constant `FILE_H` is never used
+ --> src/bitboard.rs:9:11
+  |
+9 | pub const FILE_H: Bitboard = 0x8080808080808080;
+  |           ^^^^^^
+
+warning: constant `RANK_1` is never used
+  --> src/bitboard.rs:12:11
+   |
+12 | pub const RANK_1: Bitboard = 0x00000000000000FF;
+   |           ^^^^^^
+
+warning: constant `RANK_2` is never used
+  --> src/bitboard.rs:13:11
+   |
+13 | pub const RANK_2: Bitboard = 0x000000000000FF00;
+   |           ^^^^^^
+
+warning: constant `RANK_7` is never used
+  --> src/bitboard.rs:14:11
+   |
+14 | pub const RANK_7: Bitboard = 0x00FF000000000000;
+   |           ^^^^^^
+
+warning: constant `RANK_8` is never used
+  --> src/bitboard.rs:15:11
+   |
+15 | pub const RANK_8: Bitboard = 0xFF00000000000000;
+   |           ^^^^^^
+
+warning: function `toggle_bit` is never used
+  --> src/bitboard.rs:34:8
+   |
+34 | pub fn toggle_bit(bb: Bitboard, sq: u8) -> Bitboard {
+   |        ^^^^^^^^^^
+
+warning: function `pext_like` is never used
+  --> src/bitboard.rs:66:8
+   |
+66 | pub fn pext_like(src: u64, mask: u64) -> u64 {
+   |        ^^^^^^^^^
+
+warning: fields `mask`, `magic`, `shift`, and `offset` are never read
+  --> src/bitboard.rs:96:9
+   |
+95 | pub struct MagicEntry {
+   |            ---------- fields in this struct
+96 |     pub mask: Bitboard,
+   |         ^^^^
+97 |     pub magic: u64,
+   |         ^^^^^
+98 |     pub shift: u8,
+   |         ^^^^^
+99 |     pub offset: usize,
+   |         ^^^^^^
+   |
+   = note: `MagicEntry` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `shift_north` is never used
+   --> src/bitboard.rs:376:8
+    |
+376 | pub fn shift_north(bb: Bitboard) -> Bitboard {
+    |        ^^^^^^^^^^^
+
+warning: function `shift_south` is never used
+   --> src/bitboard.rs:381:8
+    |
+381 | pub fn shift_south(bb: Bitboard) -> Bitboard {
+    |        ^^^^^^^^^^^
+
+warning: function `shift_east` is never used
+   --> src/bitboard.rs:386:8
+    |
+386 | pub fn shift_east(bb: Bitboard) -> Bitboard {
+    |        ^^^^^^^^^^
+
+warning: function `shift_west` is never used
+   --> src/bitboard.rs:391:8
+    |
+391 | pub fn shift_west(bb: Bitboard) -> Bitboard {
+    |        ^^^^^^^^^^
+
+warning: function `fill_north` is never used
+   --> src/bitboard.rs:397:8
+    |
+397 | pub fn fill_north(mut bb: Bitboard, empty: Bitboard) -> Bitboard {
+    |        ^^^^^^^^^^
+
+warning: function `fill_south` is never used
+   --> src/bitboard.rs:405:8
+    |
+405 | pub fn fill_south(mut bb: Bitboard, empty: Bitboard) -> Bitboard {
+    |        ^^^^^^^^^^
+
+warning: field `pv_lines` is never read
+  --> src/search.rs:35:9
+   |
+31 | pub struct SearchResult {
+   |            ------------ field in this struct
+...
+35 |     pub pv_lines: Vec<(Move, i32)>,
+   |         ^^^^^^^^
+
+warning: method `clear_tt` is never used
+    --> src/search.rs:1012:12
+     |
+  80 | impl SearchEngine {
+     | ----------------- method in this implementation
+...
+1012 |     pub fn clear_tt(&mut self) {
+     |            ^^^^^^^^
+
+warning: constant `PAWN_VALUE` is never used
+ --> src/eval.rs:9:7
+  |
+9 | const PAWN_VALUE: i32 = 100;
+  |       ^^^^^^^^^^
+
+warning: constant `KNIGHT_VALUE` is never used
+  --> src/eval.rs:10:7
+   |
+10 | const KNIGHT_VALUE: i32 = 320;
+   |       ^^^^^^^^^^^^
+
+warning: constant `BISHOP_VALUE` is never used
+  --> src/eval.rs:11:7
+   |
+11 | const BISHOP_VALUE: i32 = 330;
+   |       ^^^^^^^^^^^^
+
+warning: constant `ROOK_VALUE` is never used
+  --> src/eval.rs:12:7
+   |
+12 | const ROOK_VALUE: i32 = 500;
+   |       ^^^^^^^^^^
+
+warning: constant `QUEEN_VALUE` is never used
+  --> src/eval.rs:13:7
+   |
+13 | const QUEEN_VALUE: i32 = 900;
+   |       ^^^^^^^^^^^
+
+warning: constant `HANGING_PIECE_PENALTY` is never used
+  --> src/eval.rs:16:7
+   |
+16 | const HANGING_PIECE_PENALTY: i32 = 150;  // Severe penalty for undefended pieces
+   |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `BISHOP_LONG_DIAGONAL` is never used
+  --> src/eval.rs:32:7
+   |
+32 | const BISHOP_LONG_DIAGONAL: i32 = 20;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `BACKWARD_PAWN` is never used
+  --> src/eval.rs:39:7
+   |
+39 | const BACKWARD_PAWN: i32 = 12;
+   |       ^^^^^^^^^^^^^
+
+warning: constant `CANDIDATE_PASSED` is never used
+  --> src/eval.rs:42:7
+   |
+42 | const CANDIDATE_PASSED: [i32; 8] = [0, 5, 8, 15, 25, 40, 70, 0];
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `PAWN_CHAIN_BONUS` is never used
+  --> src/eval.rs:43:7
+   |
+43 | const PAWN_CHAIN_BONUS: i32 = 8;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `KING_ZONE_ATTACK` is never used
+  --> src/eval.rs:49:7
+   |
+49 | const KING_ZONE_ATTACK: i32 = 10;
+   |       ^^^^^^^^^^^^^^^^
+
+warning: constant `SAFE_MOBILITY_BONUS` is never used
+  --> src/eval.rs:55:7
+   |
+55 | const SAFE_MOBILITY_BONUS: i32 = 4;
+   |       ^^^^^^^^^^^^^^^^^^^
+
+warning: associated functions `find_least_valuable_attacker` and `count_attackers` are never used
+   --> src/eval.rs:512:8
+    |
+207 | impl Evaluator {
+    | -------------- associated functions in this implementation
+...
+512 |     fn find_least_valuable_attacker(board: &BoardState, square: u8, color: usize, tables: &AttackTables) -> Option<u8> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+690 |     fn count_attackers(board: &BoardState, square: u8, color: usize, tables: &AttackTables) -> i32 {
+    |        ^^^^^^^^^^^^^^^
+
+warning: methods `hash_piece`, `hash_castling`, `hash_ep`, and `hash_side` are never used
+  --> src/zobrist.rs:44:12
+   |
+11 | impl Zobrist {
+   | ------------ methods in this implementation
+...
+44 |     pub fn hash_piece(&self, color: usize, piece: usize, square: usize) -> u64 {
+   |            ^^^^^^^^^^
+...
+48 |     pub fn hash_castling(&self, rights: u8) -> u64 {
+   |            ^^^^^^^^^^^^^
+...
+52 |     pub fn hash_ep(&self, file: u8) -> u64 {
+   |            ^^^^^^^
+...
+56 |     pub fn hash_side(&self) -> u64 {
+   |            ^^^^^^^^^
+
+error: linking with `cc` failed: exit status: 1
+  |
+  = note:  "cc" "-Wl,-exported_symbols_list" "-Wl,/Users/matias/Documents/Projects/AI/RustChessEngine/tmp_build/rustcRkvLse/list" "/Users/matias/Documents/Projects/AI/RustChessEngine/tmp_build/rustcRkvLse/symbols.o" "<2 object files omitted>" "<sysroot>/lib/rustlib/aarch64-apple-darwin/lib/libpanic_abort-*.rlib" "/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/deps/{liblazy_static-1eb0e2598a20c47a,librand-190b1d4e4dfe41bb,librand_chacha-c6d0606fddc475e3,libppv_lite86-f200b4f8bc1df96f,libzerocopy-64c928d1889703c4,librand_core-8055362383fd07a6,libgetrandom-510412e753951c7c,librayon-705620fa1daacfa8,librayon_core-ce1266fa483c4a4e,libcrossbeam_deque-4d494aeaa68490bf,libcrossbeam_epoch-3c6799b4a7eb60e2,libcrossbeam_utils-816298b7fda13955,libeither-e3c28bde76ee9285,libparking_lot-5a03235b911ff611,libparking_lot_core-dbe61009e27ceb46,libsmallvec-f8c12e51a1d54d38,liblock_api-ab25e42f10b715f9,libscopeguard-3175ba18407e3e73,libpyo3-047c1bf746e2cf20,libcfg_if-aeaf0d55e0c9082d,libmemoffset-6c970565a13e9603,libonce_cell-4254ef85aea91e04,libpyo3_ffi-715d82178b1e39d1,liblibc-dbc4599d8a6e1aac,libunindent-c892a9e4d3cd2146}.rlib" "<sysroot>/lib/rustlib/aarch64-apple-darwin/lib/{libstd-*,libobject-*,libmemchr-*,libaddr2line-*,libgimli-*,libcfg_if-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libminiz_oxide-*,libadler2-*,libunwind-*,liblibc-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "-liconv" "-lSystem" "-lc" "-lm" "-arch" "arm64" "-mmacosx-version-min=11.0.0" "-o" "/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/deps/libchess_engine.dylib" "-Wl,-dead_strip" "-dynamiclib" "-nodefaultlibs"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: Undefined symbols for architecture arm64:
+            "_PyBaseObject_Type", referenced from:
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hc06a18d7215f643e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hc06a18d7215f643e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hc06a18d7215f643e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hf61dd9260095b1c6 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hf61dd9260095b1c6 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::h202fc038a5b394bc in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                pyo3::pyclass_init::PyClassInitializer$LT$T$GT$::create_class_object_of_type::h19a828680eb51a2c in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                ...
+            "_PyBytes_AsString", referenced from:
+                pyo3::types::string::_$LT$impl$u20$pyo3..instance..Borrowed$LT$pyo3..types..string..PyString$GT$$GT$::to_string_lossy::h3847e5ee1076f09e in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyBytes_Size", referenced from:
+                pyo3::types::string::_$LT$impl$u20$pyo3..instance..Borrowed$LT$pyo3..types..string..PyString$GT$$GT$::to_string_lossy::h3847e5ee1076f09e in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyDict_New", referenced from:
+                pyo3::types::dict::PyDict::new_bound::hc1c85bd6dbecb102 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyDict_Next", referenced from:
+                pyo3::impl_::extract_argument::FunctionDescription::extract_arguments_tuple_dict::hf7e409945832a71c in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                pyo3::impl_::extract_argument::FunctionDescription::extract_arguments_tuple_dict::hf7e409945832a71c in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+            "_PyDict_SetItem", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..dict..PyDict$GT$$u20$as$u20$pyo3..types..dict..PyDictMethods$GT$::set_item::inner::hc27ffd360f5ad221 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_GetRaisedException", referenced from:
+                pyo3::err::PyErr::make_normalized::hf5696411043cc1b5 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::err::PyErr::take::hf0ce08feb3346f58 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_GivenExceptionMatches", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..module..PyModule$GT$$u20$as$u20$pyo3..types..module..PyModuleMethods$GT$::index::h11781cd6b84c1329 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_NewExceptionWithDoc", referenced from:
+                pyo3::err::PyErr::new_type_bound::h3e889948c0e2d3c7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::err::PyErr::new_type_bound::h3e889948c0e2d3c7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_Print", referenced from:
+                pyo3::err::panic_after_error::h77e010afbb838b30 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_PrintEx", referenced from:
+                pyo3::err::PyErr::print_panic_and_unwind::he04dda2bcba06d4f in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::err::PyErr::print::hb266e07ce90e184b in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_SetObject", referenced from:
+                pyo3::err::err_state::raise_lazy::hb04022b4decc67ce in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_SetRaisedException", referenced from:
+                pyo3::err::PyErr::print::hb266e07ce90e184b in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::err::err_state::PyErrState::restore::hed5cf3e23054c239 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::impl_::pymethods::_call_clear::h6483f1060619c711 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::pyclass::create_type_object::GetSetDefType::create_py_get_set_def::getset_getter::h6850e5312a037164 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::pyclass::create_type_object::GetSetDefType::create_py_get_set_def::getset_setter::hf38f2c21e935b0b5 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::pyclass::create_type_object::GetSetDefType::create_py_get_set_def::getter::h29c6742db044889f in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::pyclass::create_type_object::GetSetDefType::create_py_get_set_def::setter::h9bc69fb9d1f8ec59 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                ...
+            "_PyErr_SetString", referenced from:
+                pyo3::err::err_state::raise_lazy::hb04022b4decc67ce in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyErr_WriteUnraisable", referenced from:
+                pyo3::instance::python_format::h972663ce7f298332 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_AttributeError", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..module..PyModule$GT$$u20$as$u20$pyo3..types..module..PyModuleMethods$GT$::index::h11781cd6b84c1329 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_BaseException", referenced from:
+                pyo3::sync::GILOnceCell$LT$T$GT$::init::ha88f4097e11583b7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_ImportError", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hef726789d6d86520 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_OverflowError", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4358b254e8436d48 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_RuntimeError", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h23e16e3119f9b880 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_SystemError", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hf6a2afb55d09999f in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_TypeError", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h0ce710b1a9a3f389 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h3bc44f1ddf7ffbd1 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h86ee3948ff963327 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::err::err_state::raise_lazy::hb04022b4decc67ce in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::impl_::extract_argument::argument_extraction_error::hd6d94df1a7354e2b in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyExc_ValueError", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hafb3dec7ac5b2831 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9307c1bfeb98fbeb in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h94089345da98c89e in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyException_GetCause", referenced from:
+                pyo3::err::PyErr::cause::hd1a98fb459c887a8 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::err::PyErr::cause::hd1a98fb459c887a8 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyException_GetTraceback", referenced from:
+                pyo3::err::PyErr::into_value::h8fc6beb53e61d921 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                _$LT$pyo3..err..PyErr$u20$as$u20$core..fmt..Debug$GT$::fmt::h2bcf4f6a44f8eb98 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyException_SetCause", referenced from:
+                pyo3::impl_::extract_argument::argument_extraction_error::hd6d94df1a7354e2b in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::impl_::pyclass::lazy_type_object::wrap_in_runtime_error::h36fd11e3c88699e2 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyException_SetTraceback", referenced from:
+                pyo3::err::PyErr::into_value::h8fc6beb53e61d921 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyGILState_Ensure", referenced from:
+                pyo3::gil::GILGuard::acquire::h6aa304c62e2f40f1 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyGILState_Release", referenced from:
+                _$LT$pyo3..err..PyErr$u20$as$u20$core..fmt..Debug$GT$::fmt::h2bcf4f6a44f8eb98 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                _$LT$pyo3..gil..GILGuard$u20$as$u20$core..ops..drop..Drop$GT$::drop::hd784c824b79a3031 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyInterpreterState_Get", referenced from:
+                pyo3::impl_::pymodule::ModuleDef::make_module::h069c9db0f47ef7d5 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyInterpreterState_GetID", referenced from:
+                pyo3::impl_::pymodule::ModuleDef::make_module::h069c9db0f47ef7d5 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyList_Append", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..list..PyList$GT$$u20$as$u20$pyo3..types..list..PyListMethods$GT$::append::inner::hd0cd946787b2c91a in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyList_New", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..module..PyModule$GT$$u20$as$u20$pyo3..types..module..PyModuleMethods$GT$::index::h11781cd6b84c1329 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyLong_AsLong", referenced from:
+                pyo3::conversions::std::num::_$LT$impl$u20$pyo3..conversion..FromPyObject$u20$for$u20$u8$GT$::extract_bound::h8bbff088b3c150d6 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyLong_AsUnsignedLongLong", referenced from:
+                pyo3::conversions::std::num::_$LT$impl$u20$pyo3..conversion..FromPyObject$u20$for$u20$u64$GT$::extract_bound::hcbad82292ed8c922 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::conversions::std::num::_$LT$impl$u20$pyo3..conversion..FromPyObject$u20$for$u20$u64$GT$::extract_bound::hcbad82292ed8c922 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyLong_FromLong", referenced from:
+                pyo3::conversions::std::num::_$LT$impl$u20$pyo3..conversion..ToPyObject$u20$for$u20$i32$GT$::to_object::h993d86c92ed88dca in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyLong_FromSsize_t", referenced from:
+                pyo3::impl_::pyclass::get_sequence_item_from_mapping::hebf967de1b8294c9 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::impl_::pyclass::assign_sequence_item_from_mapping::ha98d43e5013cb159 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyLong_FromUnsignedLongLong", referenced from:
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h30063c6823f40199 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+            "_PyModule_Create2", referenced from:
+                pyo3::sync::GILOnceCell$LT$T$GT$::init::h5a3a95c50341956f in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyNumber_Index", referenced from:
+                pyo3::conversions::std::num::_$LT$impl$u20$pyo3..conversion..FromPyObject$u20$for$u20$u64$GT$::extract_bound::hcbad82292ed8c922 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_DelItem", referenced from:
+                pyo3::impl_::pyclass::assign_sequence_item_from_mapping::ha98d43e5013cb159 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_GC_UnTrack", referenced from:
+                pyo3::impl_::pyclass::tp_dealloc_with_gc::he31ee4cfdd3c6c17 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                pyo3::impl_::pyclass::tp_dealloc_with_gc::hee7196ec78747588 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+            "_PyObject_GenericGetDict", referenced from:
+                pyo3::pyclass::create_type_object::create_type_object::inner::h1749aa0c47ab5908 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_GenericSetDict", referenced from:
+                pyo3::pyclass::create_type_object::create_type_object::inner::h1749aa0c47ab5908 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_GetAttr", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..any..PyAny$GT$$u20$as$u20$pyo3..types..any..PyAnyMethods$GT$::getattr::inner::h5d94cd5bd373dbdc in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_GetItem", referenced from:
+                pyo3::impl_::pyclass::get_sequence_item_from_mapping::hebf967de1b8294c9 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_Repr", referenced from:
+                _$LT$$RF$T$u20$as$u20$core..fmt..Debug$GT$::fmt::hc08cd6f9056090d1 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                _$LT$pyo3..instance..Bound$LT$T$GT$$u20$as$u20$core..fmt..Debug$GT$::fmt::h2bd665490ff9d236 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_SetAttr", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..any..PyAny$GT$$u20$as$u20$pyo3..types..any..PyAnyMethods$GT$::setattr::inner::hf875e0cb16a7b7f2 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_SetAttrString", referenced from:
+                pyo3::sync::GILOnceCell$LT$T$GT$::init::hb4efbdab4948e24c in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_SetItem", referenced from:
+                pyo3::impl_::pyclass::assign_sequence_item_from_mapping::ha98d43e5013cb159 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyObject_Str", referenced from:
+                _$LT$pyo3..instance..Bound$LT$pyo3..types..any..PyAny$GT$$u20$as$u20$pyo3..types..any..PyAnyMethods$GT$::str::he1de5c16a93e950f in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                _$LT$$RF$T$u20$as$u20$core..fmt..Display$GT$::fmt::h607715d553c0bec9 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                _$LT$pyo3..instance..Bound$LT$T$GT$$u20$as$u20$core..fmt..Display$GT$::fmt::h1e2edec245983a9c in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyTuple_New", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h25b6b786cb45deb7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::hb8ebc0f50dd3134e in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyType_FromSpec", referenced from:
+                pyo3::pyclass::create_type_object::create_type_object::inner::h1749aa0c47ab5908 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyType_GenericAlloc", referenced from:
+                _$LT$pyo3..pyclass_init..PyNativeTypeInitializer$LT$T$GT$$u20$as$u20$pyo3..pyclass_init..PyObjectInit$LT$T$GT$$GT$::into_new_object::inner::ha2b3499705570e86 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyType_GetName", referenced from:
+                pyo3::pyclass::create_type_object::no_constructor_defined::h9018bea9fffa8067 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::pyclass::create_type_object::no_constructor_defined::h9018bea9fffa8067 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::instance::python_format::h972663ce7f298332 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyType_GetQualName", referenced from:
+                _$LT$pyo3..err..PyDowncastErrorArguments$u20$as$u20$pyo3..err..err_state..PyErrArguments$GT$::arguments::h3f0bc4543a5d6780 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyType_IsSubtype", referenced from:
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::h2cf4202a7d864032 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hd6c7ae414b873d16 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h30063c6823f40199 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                pyo3::impl_::extract_argument::extract_pyclass_ref::h1761ac14d4bec132 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                pyo3::impl_::extract_argument::extract_pyclass_ref_mut::h016231c164b92419 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+            "_PyUnicode_AsEncodedString", referenced from:
+                pyo3::types::string::_$LT$impl$u20$pyo3..instance..Borrowed$LT$pyo3..types..string..PyString$GT$$GT$::to_string_lossy::h3847e5ee1076f09e in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyUnicode_AsUTF8AndSize", referenced from:
+                pyo3::types::string::_$LT$impl$u20$pyo3..instance..Borrowed$LT$pyo3..types..string..PyString$GT$$GT$::to_string_lossy::h3847e5ee1076f09e in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                pyo3::types::string::_$LT$impl$u20$pyo3..instance..Borrowed$LT$pyo3..types..string..PyString$GT$$GT$::to_str::hcd52a3b1ced7b6e7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                _$LT$pyo3..err..PyDowncastErrorArguments$u20$as$u20$pyo3..err..err_state..PyErrArguments$GT$::arguments::h3f0bc4543a5d6780 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_PyUnicode_FromStringAndSize", referenced from:
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h0ce710b1a9a3f389 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h23e16e3119f9b880 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h25b6b786cb45deb7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h25b6b786cb45deb7 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h3bc44f1ddf7ffbd1 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h4358b254e8436d48 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h9307c1bfeb98fbeb in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                ...
+            "_PyUnicode_InternInPlace", referenced from:
+                pyo3::sync::GILOnceCell$LT$T$GT$::init::hc53f24c2d6bfd278 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "_Py_IsInitialized", referenced from:
+                std::sync::poison::once::Once::call_once_force::_$u7b$$u7b$closure$u7d$$u7d$::hb7219fb17792d206 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+                core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::haea908d5e1ab9494 in libpyo3-047c1bf746e2cf20.rlib[3](pyo3-047c1bf746e2cf20.pyo3.8c993d6b3ce9969d-cgu.0.rcgu.o)
+            "__Py_Dealloc", referenced from:
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hc06a18d7215f643e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hc06a18d7215f643e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hf61dd9260095b1c6 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                _$LT$pyo3..pycell..impl_..PyClassObject$LT$T$GT$$u20$as$u20$pyo3..pycell..impl_..PyClassObjectLayout$LT$T$GT$$GT$::tp_dealloc::hf61dd9260095b1c6 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::h2cf4202a7d864032 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hac1c038965a2d07e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hac1c038965a2d07e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                ...
+            "__Py_FalseStruct", referenced from:
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hac1c038965a2d07e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hf2072a563b35d005 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hf2072a563b35d005 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+            "__Py_NoneStruct", referenced from:
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::h202fc038a5b394bc in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h016c0a70d9c6ca6b in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h016c0a70d9c6ca6b in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h038d0ab438076194 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h038d0ab438076194 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h299b3acf1dbc9170 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyChessEngine$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyChessEngine$GT$$GT$::py_methods::ITEMS::trampoline::h30063c6823f40199 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                ...
+            "__Py_TrueStruct", referenced from:
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hac1c038965a2d07e in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hd6c7ae414b873d16 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hf2072a563b35d005 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+                chess_engine::_$LT$impl$u20$pyo3..impl_..pyclass..PyMethods$LT$chess_engine..PyBoardState$GT$$u20$for$u20$pyo3..impl_..pyclass..PyClassImplCollector$LT$chess_engine..PyBoardState$GT$$GT$::py_methods::ITEMS::trampoline::hf2072a563b35d005 in chess_engine.chess_engine.fb2da74eb2257ffb-cgu.0.rcgu.o
+          ld: symbol(s) not found for architecture arm64
+          clang: error: linker command failed with exit code 1 (use -v to see invocation)
+          
+
+warning: `chess_engine` (lib) generated 34 warnings
+error: could not compile `chess_engine` (lib) due to 1 previous error; 34 warnings emitted

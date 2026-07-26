@@ -1,5 +1,8 @@
 use crate::board::{BoardState, Piece, Color};
 use crate::bitboard::*;
+use smallvec::SmallVec;
+
+pub type MoveList = SmallVec<[Move; 256]>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Move {
@@ -68,9 +71,9 @@ impl Move {
 pub struct MoveGenerator;
 
 impl MoveGenerator {
-    pub fn generate_legal_moves(board: &BoardState) -> Vec<Move> {
+    pub fn generate_legal_moves(board: &BoardState) -> MoveList {
         let pseudo_legal = Self::generate_pseudo_legal(board);
-        let mut legal_moves = Vec::with_capacity(pseudo_legal.len());
+        let mut legal_moves = MoveList::with_capacity(pseudo_legal.len());
 
         for mv in pseudo_legal {
             let mut new_board = board.clone();
@@ -85,15 +88,15 @@ impl MoveGenerator {
         legal_moves
     }
 
-    pub fn generate_captures(board: &BoardState) -> Vec<Move> {
+    pub fn generate_captures(board: &BoardState) -> MoveList {
         Self::generate_legal_moves(board)
             .into_iter()
             .filter(|m| m.is_capture())
             .collect()
     }
 
-    fn generate_pseudo_legal(board: &BoardState) -> Vec<Move> {
-        let mut moves = Vec::with_capacity(256);
+    fn generate_pseudo_legal(board: &BoardState) -> MoveList {
+        let mut moves = MoveList::with_capacity(256);
         let color = board.side_to_move;
 
         Self::generate_pawn_moves(board, color, &mut moves);
@@ -107,7 +110,7 @@ impl MoveGenerator {
         moves
     }
 
-    fn generate_pawn_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_pawn_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         let pawns = board.pieces[color as usize][Piece::Pawn as usize];
         let direction: i8 = if color == Color::White { 8 } else { -8 };
         let start_rank = if color == Color::White { 1 } else { 6 };
@@ -177,7 +180,7 @@ impl MoveGenerator {
         }
     }
 
-    fn generate_knight_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_knight_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         let knights = board.pieces[color as usize][Piece::Knight as usize];
         let own_pieces = board.color_bb[color as usize];
         let tables = &ATTACK_TABLES;
@@ -202,7 +205,7 @@ impl MoveGenerator {
         }
     }
 
-    fn generate_bishop_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_bishop_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         let bishops = board.pieces[color as usize][Piece::Bishop as usize];
         let own_pieces = board.color_bb[color as usize];
         let tables = &ATTACK_TABLES;
@@ -227,7 +230,7 @@ impl MoveGenerator {
         }
     }
 
-    fn generate_rook_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_rook_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         let rooks = board.pieces[color as usize][Piece::Rook as usize];
         let own_pieces = board.color_bb[color as usize];
         let tables = &ATTACK_TABLES;
@@ -252,7 +255,7 @@ impl MoveGenerator {
         }
     }
 
-    fn generate_queen_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_queen_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         let queens = board.pieces[color as usize][Piece::Queen as usize];
         let own_pieces = board.color_bb[color as usize];
         let tables = &ATTACK_TABLES;
@@ -277,7 +280,7 @@ impl MoveGenerator {
         }
     }
 
-    fn generate_king_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_king_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         let king = board.pieces[color as usize][Piece::King as usize];
         let own_pieces = board.color_bb[color as usize];
         let tables = &ATTACK_TABLES;
@@ -300,7 +303,7 @@ impl MoveGenerator {
         }
     }
 
-    fn generate_castling_moves(board: &BoardState, color: Color, moves: &mut Vec<Move>) {
+    fn generate_castling_moves(board: &BoardState, color: Color, moves: &mut MoveList) {
         if color == Color::White {
             // Kingside castling
             if board.castling_rights & 1 != 0 {

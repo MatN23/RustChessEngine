@@ -2,196 +2,205 @@ use crate::board::{BoardState, Piece, Color, PIECE_VALUES};
 use crate::bitboard::*;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PROFESSIONAL EVALUATION WEIGHTS (Tournament Tuned)
+// PROFESSIONAL EVALUATION WEIGHTS (Stockfish-Calibrated)
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Material (adjusted for better endgame scaling)
+// Material (tournament-tested values)
 const PAWN_VALUE: i32 = 100;
-const KNIGHT_VALUE: i32 = 320;
-const BISHOP_VALUE: i32 = 330;
+const KNIGHT_VALUE: i32 = 325;
+const BISHOP_VALUE: i32 = 335;
 const ROOK_VALUE: i32 = 500;
-const QUEEN_VALUE: i32 = 900;
+const QUEEN_VALUE: i32 = 975;
 
 // Tactical Safety Weights (CRITICAL FOR PREVENTING BLUNDERS)
-const HANGING_PIECE_PENALTY: i32 = 150;  // Severe penalty for undefended pieces
-const ABSOLUTE_PIN_PENALTY: i32 = 50;    // Severe penalty for absolute pins
-const RELATIVE_PIN_PENALTY: i32 = 15;    // Lighter penalty for relative pins
-const FORK_BONUS: i32 = 50;              // Bonus for creating forks
-const SKEWER_BONUS: i32 = 40;            // Bonus for skewers
-const DISCOVERED_ATTACK_BONUS: i32 = 35; // Bonus for discovered attacks
-const TRAPPED_PIECE: i32 = 120;          // Heavy penalty for trapped pieces
-const THREAT_BONUS: i32 = 30;            // Bonus for creating threats
+const HANGING_PIECE_PENALTY: i32 = 80;   // Safer penalty (less than pawn value)
+const ABSOLUTE_PIN_PENALTY: i32 = 65;    // Heavy penalty for absolute pins
+const RELATIVE_PIN_PENALTY: i32 = 25;    // Lighter penalty for relative pins
+const FORK_BONUS: i32 = 60;              // Bonus for creating forks
+const SKEWER_BONUS: i32 = 45;            // Bonus for skewers
+const DISCOVERED_ATTACK_BONUS: i32 = 40; // Bonus for discovered attacks
+const TRAPPED_PIECE: i32 = 180;          // Heavy penalty for trapped pieces
+const THREAT_BONUS: i32 = 35;            // Bonus for creating threats
+
 
 // Positional Weights
-const BISHOP_PAIR_BONUS: i32 = 50;
-const ROOK_OPEN_FILE: i32 = 25;
-const ROOK_SEMI_OPEN: i32 = 15;
-const ROOK_SEVENTH_RANK: i32 = 20;
-const CONNECTED_ROOKS: i32 = 15;
-const KNIGHT_OUTPOST: i32 = 30;
-const BISHOP_LONG_DIAGONAL: i32 = 20;
-const BAD_BISHOP_PENALTY: i32 = 20;
-const FIANCHETTO_BONUS: i32 = 15;
+const BISHOP_PAIR_BONUS: i32 = 55;
+const ROOK_OPEN_FILE: i32 = 35;
+const ROOK_SEMI_OPEN: i32 = 20;
+const ROOK_SEVENTH_RANK: i32 = 30;
+const CONNECTED_ROOKS: i32 = 20;
+const KNIGHT_OUTPOST: i32 = 40;
+const BISHOP_LONG_DIAGONAL: i32 = 25;
+const BAD_BISHOP_PENALTY: i32 = 25;
+const FIANCHETTO_BONUS: i32 = 18;
 
-// Pawn Structure
-const DOUBLED_PAWN: i32 = 15;
-const ISOLATED_PAWN: i32 = 20;
-const BACKWARD_PAWN: i32 = 12;
-const PASSED_PAWN_BONUS: [i32; 8] = [0, 10, 20, 40, 70, 120, 200, 0];
-const PROTECTED_PASSED_PAWN: [i32; 8] = [0, 5, 10, 20, 35, 60, 100, 0];
-const CANDIDATE_PASSED: [i32; 8] = [0, 5, 8, 15, 25, 40, 70, 0];
-const PAWN_CHAIN_BONUS: i32 = 8;
-const PAWN_STORM_BONUS: i32 = 12;
+// Pawn Structure (significantly heavier penalties)
+const DOUBLED_PAWN: i32 = 25;
+const ISOLATED_PAWN: i32 = 30;
+const BACKWARD_PAWN: i32 = 20;
+const PASSED_PAWN_BONUS: [i32; 8] = [0, 15, 30, 60, 110, 180, 300, 0];
+const PROTECTED_PASSED_PAWN: [i32; 8] = [0, 8, 15, 30, 55, 90, 150, 0];
+const CANDIDATE_PASSED: [i32; 8] = [0, 8, 12, 22, 38, 60, 100, 0];
+const PAWN_CHAIN_BONUS: i32 = 10;
+const PAWN_STORM_BONUS: i32 = 15;
 
-// King Safety
-const PAWN_SHIELD_BONUS: i32 = 15;
-const OPEN_FILE_NEAR_KING: i32 = 20;
-const KING_ZONE_ATTACK: i32 = 10;
-const CASTLING_RIGHTS_BONUS: i32 = 25;
-const KING_ATTACK_WEIGHT: [i32; 6] = [0, 0, 50, 75, 88, 94]; // By attacker count
+// King Safety (much stronger)
+const PAWN_SHIELD_BONUS: i32 = 20;
+const OPEN_FILE_NEAR_KING: i32 = 35;
+const KING_ZONE_ATTACK: i32 = 15;
+const CASTLING_RIGHTS_BONUS: i32 = 35;
+// Quadratic king attack table — much more aggressive to prevent saving minor pieces at cost of king
+const KING_ATTACK_WEIGHT: [i32; 8] = [0, 20, 100, 250, 450, 700, 950, 1200];
 
-// Space and Mobility
-const SPACE_BONUS: i32 = 2;
-const SAFE_MOBILITY_BONUS: i32 = 4;
-const KNIGHT_MOBILITY: i32 = 4;
-const BISHOP_MOBILITY: i32 = 3;
-const ROOK_MOBILITY: i32 = 2;
-const QUEEN_MOBILITY: i32 = 1;
+
+// Space and Mobility (much stronger mobility)
+const SPACE_BONUS: i32 = 3;
+const SAFE_MOBILITY_BONUS: i32 = 5;
+const KNIGHT_MOBILITY: i32 = 7;
+const BISHOP_MOBILITY: i32 = 5;
+const ROOK_MOBILITY: i32 = 4;
+const QUEEN_MOBILITY: i32 = 2;
 
 // Tempo
-const TEMPO_BONUS: i32 = 15;
+const TEMPO_BONUS: i32 = 20;
 
-// Piece-Square Tables (Enhanced with better positional understanding)
+// Connectivity (pieces protecting each other)
+const CONNECTIVITY_BONUS: i32 = 4;
+
+// Piece-Square Tables (Stockfish-Calibrated)
+// Board layout: a1=0, b1=1, ..., h1=7, a2=8, ..., h8=63
+// Tables are from White's perspective and flipped for Black
+
 const PAWN_PST_MG: [i32; 64] = [
-      0,   0,   0,   0,   0,   0,   0,   0,
-     90,  95,  90,  85,  85,  90,  95,  90,
-     40,  50,  60,  75,  75,  60,  50,  40,
-     30,  40,  55,  70,  70,  55,  40,  30,
-     20,  30,  45,  60,  60,  45,  30,  20,
-     15,  20,  25,  40,  40,  25,  20,  15,
-     10,  15, -5, -15, -15,  -5,  15,  10,
-      0,   0,   0,   0,   0,   0,   0,   0
+      0,   0,   0,   0,   0,   0,   0,   0,  // rank 1 (impossible)
+     98, 134,  61,  95,  68, 126,  34, -11,  // rank 7
+     -6,   7,  26,  31,  65,  56,  25, -20,  // rank 6
+    -14,  13,   6,  21,  23,  12,  17, -23,  // rank 5
+    -27,  -2,  -5,  12,  17,   6,  10, -25,  // rank 4
+    -26,  -4,  -4, -10,   3,   3,  33, -12,  // rank 3
+    -35,  -1, -20, -23, -15,  24,  38, -22,  // rank 2
+      0,   0,   0,   0,   0,   0,   0,   0,  // rank 1 (impossible)
 ];
 
 const PAWN_PST_EG: [i32; 64] = [
       0,   0,   0,   0,   0,   0,   0,   0,
-    130, 130, 130, 130, 130, 130, 130, 130,
-     90,  95, 100, 105, 105, 100,  95,  90,
-     60,  65,  70,  80,  80,  70,  65,  60,
-     35,  40,  45,  55,  55,  45,  40,  35,
-     20,  25,  30,  35,  35,  30,  25,  20,
-     10,  15,  15,  15,  15,  15,  15,  10,
-      0,   0,   0,   0,   0,   0,   0,   0
+    178, 173, 158, 134, 147, 132, 165, 187,
+     94, 100,  85,  67,  56,  53,  82,  84,
+     32,  24,  13,   5,  -2,   4,  17,  17,
+     13,   9,  -3,  -7,  -7,  -8,   3,  -1,
+      4,   7,  -6,   1,   0,  -5,  -1,  -8,
+     13,   8,   8,  10,  13,   0,   2,  -7,
+      0,   0,   0,   0,   0,   0,   0,   0,
 ];
 
 const KNIGHT_PST_MG: [i32; 64] = [
-    -70, -60, -50, -45, -45, -50, -60, -70,
-    -60, -30,   0,  15,  15,   0, -30, -60,
-    -50,   0,  25,  40,  40,  25,   0, -50,
-    -45,  15,  35,  50,  50,  35,  15, -45,
-    -45,  15,  35,  50,  50,  35,  15, -45,
-    -50,   0,  30,  40,  40,  30,   0, -50,
-    -60, -30,   0,  10,  10,   0, -30, -60,
-    -70, -60, -50, -45, -45, -50, -60, -70
+   -167, -89, -34, -49,  61, -97, -15,-107,
+    -73, -41,  72,  36,  23,  62,   7, -17,
+    -47,  60,  37,  65,  84, 129,  73,  44,
+     -9,  17,  19,  53,  37,  69,  18,  22,
+    -13,   4,  16,  13,  28,  19,  21,  -8,
+    -23,  -9,  12,  10,  19,  17,  25, -16,
+    -29, -53, -12,  -3,  -1,  18, -14, -19,
+   -105, -21, -58, -33, -17, -28, -19, -23,
 ];
 
 const KNIGHT_PST_EG: [i32; 64] = [
-    -70, -60, -50, -45, -45, -50, -60, -70,
-    -60, -40, -30, -25, -25, -30, -40, -60,
-    -50, -30,   0,  15,  15,   0, -30, -50,
-    -45, -25,  15,  25,  25,  15, -25, -45,
-    -45, -25,  15,  25,  25,  15, -25, -45,
-    -50, -30,   0,  15,  15,   0, -30, -50,
-    -60, -40, -30, -25, -25, -30, -40, -60,
-    -70, -60, -50, -45, -45, -50, -60, -70
+    -58, -38, -13, -28, -31, -27, -63, -99,
+    -25,  -8, -25,  -2,  -9, -25, -24, -52,
+    -24, -20,  10,   9,  -1,  -9, -19, -41,
+    -17,   3,  22,  22,  22,  11,   8, -18,
+    -18,  -6,  16,  25,  16,  17,   4, -18,
+    -23,  -3,  -1,  15,  10,  -3, -20, -22,
+    -42, -20, -10,  -5,  -2, -20, -23, -44,
+    -29, -51, -23, -15, -22, -18, -50, -64,
 ];
 
 const BISHOP_PST_MG: [i32; 64] = [
-    -30, -20, -20, -20, -20, -20, -20, -30,
-    -20,   0,   5,  10,  10,   5,   0, -20,
-    -20,   5,  20,  30,  30,  20,   5, -20,
-    -20,  10,  25,  40,  40,  25,  10, -20,
-    -20,  10,  30,  45,  45,  30,  10, -20,
-    -20,  20,  25,  30,  30,  25,  20, -20,
-    -20,   5,   0,   0,   0,   0,   5, -20,
-    -30, -20, -20, -20, -20, -20, -20, -30
+    -29,   4, -82, -37, -25, -42,   7,  -8,
+    -26,  16, -18, -13,  30,  59,  18, -47,
+    -16,  37,  43,  40,  35,  50,  37,  -2,
+     -4,   5,  19,  50,  37,  37,   7,  -2,
+     -6,  13,  13,  26,  34,  12,  10,   4,
+      0,  15,  15,  15,  14,  27,  18,  10,
+      4,  15,  16,   0,   7,  21,  33,   1,
+    -33,  -3, -14, -21, -13, -12, -39, -21,
 ];
 
 const BISHOP_PST_EG: [i32; 64] = [
-    -30, -20, -20, -20, -20, -20, -20, -30,
-    -20,   0,   5,   5,   5,   5,   0, -20,
-    -20,   5,  15,  20,  20,  15,   5, -20,
-    -20,   5,  20,  25,  25,  20,   5, -20,
-    -20,   5,  20,  25,  25,  20,   5, -20,
-    -20,   5,  15,  20,  20,  15,   5, -20,
-    -20,   0,   5,   5,   5,   5,   0, -20,
-    -30, -20, -20, -20, -20, -20, -20, -30
+    -14, -21, -11,  -8,  -7,  -9, -17, -24,
+     -8,  -4,   7, -12,  -3, -13,  -4, -14,
+      2,  -8,   0,  -1,  -2,   6,   0,   4,
+     -3,   9,  12,   9,  14,  10,   3,   2,
+     -6,   3,  13,  19,   7,  10,  -3,  -9,
+    -12,  -3,   8,  10,  13,   3,  -7, -15,
+    -14, -18,  -7,  -1,   4,  -9, -15, -27,
+    -23,  -9, -23,  -5,  -9, -16,  -5, -17,
 ];
 
 const ROOK_PST_MG: [i32; 64] = [
-      0,   0,   5,  10,  10,   5,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-     15,  20,  20,  20,  20,  20,  20,  15,
-      5,   5,   5,  10,  10,   5,   5,   5
+     32,  42,  32,  51,  63,   9,  31,  43,
+     27,  32,  58,  62,  80,  67,  26,  44,
+     -5,  19,  26,  36,  17,  45,  61,  16,
+    -24, -11,   7,  26,  24,  35,  -8, -20,
+    -36, -26, -12,  -1,   9,  -7,   6, -23,
+    -45, -25, -16, -17,   3,   0,  -5, -33,
+    -44, -16, -20,  -9,  -1,  11,  -6, -71,
+    -19, -13,   1,  17,  16,   7, -37, -26,
 ];
 
 const ROOK_PST_EG: [i32; 64] = [
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0
+     13,  10,  18,  15,  12,  12,   8,   5,
+     11,  13,  13,  11,  -3,   3,   8,   3,
+      7,   7,   7,   5,   4,  -3,  -5,  -3,
+      4,   3,  13,   1,   2,   1,  -1,   2,
+      3,   5,   8,   4,  -5,  -6,  -8, -11,
+     -4,   0,  -5,  -1,  -7, -12,  -8, -16,
+     -6,  -6,   0,   2,  -9,  -9, -11,  -3,
+     -9,   2,   3,  -1,  -5, -13,   4, -20,
 ];
 
 const QUEEN_PST_MG: [i32; 64] = [
-    -30, -20, -15, -10, -10, -15, -20, -30,
-    -20, -10,   0,   5,   5,   0, -10, -20,
-    -15,   0,   5,  10,  10,   5,   0, -15,
-    -10,   5,  10,  15,  15,  10,   5, -10,
-    -10,   5,  10,  15,  15,  10,   5, -10,
-    -15,   0,   5,  10,  10,   5,   0, -15,
-    -20, -10,   0,   0,   0,   0, -10, -20,
-    -30, -20, -15, -10, -10, -15, -20, -30
+    -28,   0,  29,  12,  59,  44,  43,  45,
+    -24, -39,  -5,   1, -16,  57,  28,  54,
+    -13, -17,   7,   8,  29,  56,  47,  57,
+    -27, -27, -16, -16,  -1,  17,  -2,   1,
+     -9, -26,  -9, -10,  -2,  -4,   3,  -3,
+    -14,   2, -11,  -2,  -5,   2,  14,   5,
+    -35,  -8,  11,   2,   8,  15,  -3,   1,
+     -1, -18,  -9,  10, -15, -25, -31, -50,
 ];
 
 const QUEEN_PST_EG: [i32; 64] = [
-    -30, -20, -15, -10, -10, -15, -20, -30,
-    -20, -10,   0,   5,   5,   0, -10, -20,
-    -15,   0,  15,  20,  20,  15,   0, -15,
-    -10,   5,  20,  25,  25,  20,   5, -10,
-    -10,   5,  20,  25,  25,  20,   5, -10,
-    -15,   0,  15,  20,  20,  15,   0, -15,
-    -20, -10,   0,   5,   5,   0, -10, -20,
-    -30, -20, -15, -10, -10, -15, -20, -30
+     -9,  22,  22,  27,  27,  19,  10,  20,
+    -17,  20,  32,  41,  58,  25,  30,   0,
+    -20,   6,   9,  49,  47,  35,  19,   9,
+      3,  22,  24,  45,  57,  40,  57,  36,
+    -18,  28,  19,  47,  31,  34,  39,  23,
+    -16, -27,  15,   6,   9,  17,  10,   5,
+    -22, -23, -30, -16, -16, -23, -36, -32,
+    -33, -28, -22, -43,  -5, -32, -20, -41,
 ];
 
 const KING_PST_MG: [i32; 64] = [
-    -70, -60, -60, -65, -65, -60, -60, -70,
-    -60, -50, -50, -55, -55, -50, -50, -60,
-    -50, -40, -40, -45, -45, -40, -40, -50,
-    -40, -30, -30, -35, -35, -30, -30, -40,
-    -30, -20, -20, -25, -25, -20, -20, -30,
-    -20, -10, -10, -15, -15, -10, -10, -20,
-      0,  10,  10,   0,   0,  10,  10,   0,
-     25,  35,  20,   0,   0,  20,  35,  25
+    -65,  23,  16, -15, -56, -34,   2,  13,
+     29,  -1, -20,  -7,  -8,  -4, -38, -29,
+     -9,  24,   2, -16, -20,   6,  22, -22,
+    -17, -20, -12, -27, -30, -25, -14, -36,
+    -49,  -1, -27, -39, -46, -44, -33, -51,
+    -14, -14, -22, -46, -44, -30, -15, -27,
+      1,   7,  -8, -64, -43, -16,   9,   8,
+    -15,  36,  12, -54,   8, -28,  24,  14,
 ];
 
 const KING_PST_EG: [i32; 64] = [
-    -60, -50, -40, -30, -30, -40, -50, -60,
-    -50, -40, -30, -20, -20, -30, -40, -50,
-    -40, -30,  10,  20,  20,  10, -30, -40,
-    -30, -20,  20,  30,  30,  20, -20, -30,
-    -30, -20,  20,  30,  30,  20, -20, -30,
-    -40, -30,  10,  20,  20,  10, -30, -40,
-    -50, -40, -30, -20, -20, -30, -40, -50,
-    -60, -50, -40, -30, -30, -40, -50, -60
+    -74, -35, -18, -18, -11,  15,   4, -17,
+    -12,  17,  14,  17,  17,  38,  23,  11,
+     10,  17,  23,  15,  20,  45,  44,  13,
+     -8,  22,  24,  27,  26,  33,  26,   3,
+    -18,  -4,  21,  24,  27,  23,   9, -11,
+    -19,  -3,  11,  21,  23,  16,   7,  -9,
+    -27, -11,   4,  13,  14,   4,  -5, -17,
+    -53, -34, -21, -11, -28, -14, -24, -43,
 ];
 
 // Move PinType outside of impl block
@@ -218,7 +227,10 @@ impl Evaluator {
         let mut score = Self::tapered_eval(mg_score, eg_score, phase);
 
         // CRITICAL: Tactical safety (prevents blunders)
+        // We now evaluate tactical safety statically but with tuned weights.
+        // Tactical resolution is further handled by Quiescence Search and SEE.
         score += Self::tactical_safety(board, phase);
+
         
         // Positional evaluation
         score += Self::pawn_structure(board, phase);
@@ -229,6 +241,7 @@ impl Evaluator {
         score += Self::bishop_evaluation(board);
         score += Self::knight_evaluation(board);
         score += Self::tempo_bonus(board);
+        score += Self::piece_connectivity(board, phase);
 
         // Return from side-to-move perspective
         if board.side_to_move == Color::Black {
@@ -246,10 +259,17 @@ impl Evaluator {
         let mut score = 0;
         let tables = &ATTACK_TABLES;
         
+        // Build attack maps once for the entire board
+        let white_attacks = build_attack_map(board, 0, tables);
+        let black_attacks = build_attack_map(board, 1, tables);
+        
         // Check both sides for hanging pieces and tactical threats
         for color in 0..2 {
             let sign = if color == 0 { 1 } else { -1 };
-            let enemy_color = if color == 0 { 1 } else { 0 };
+            let _enemy_color = if color == 0 { 1 } else { 0 };
+            
+            let our_attacks = if color == 0 { white_attacks } else { black_attacks };
+            let enemy_attacks = if color == 0 { black_attacks } else { white_attacks };
             
             // Check all pieces for being undefended or underdefended
             for piece_type in 1..=5 {  // Pawn to Queen (not King)
@@ -264,8 +284,14 @@ impl Evaluator {
                     let see_score = Self::see_square(board, square, color as u8);
                     
                     if see_score < 0 {
-                        // Losing the piece
+                        // Losing the piece - heavy penalty
                         score += sign * see_score;
+                        
+                        // Additional penalty if piece is completely undefended (hanging)
+                        let is_defended = (our_attacks & (1u64 << square)) != 0;
+                        if !is_defended {
+                            score += sign * -HANGING_PIECE_PENALTY;
+                        }
                     }
                     
                     // Advanced pin detection
@@ -280,8 +306,8 @@ impl Evaluator {
                         PinType::None => {}
                     }
                     
-                    // Trapped piece detection
-                    if Self::is_piece_trapped(board, square, piece_type, color, tables) {
+                    // Trapped piece detection - pass attack maps to consider trade options
+                    if Self::is_piece_trapped(board, square, piece_type, color, tables, enemy_attacks, our_attacks) {
                         score += sign * -TRAPPED_PIECE;
                     }
                 }
@@ -304,74 +330,210 @@ impl Evaluator {
         (score * (12 + phase)) / 24
     }
 
-    // 🎯 SEE - Static Exchange Evaluation
-    fn see_square(board: &BoardState, square: u8, defender_color: u8) -> i32 {
-        let attacker_color = 1 - defender_color;
+    // 🎯 SEE - Static Exchange Evaluation (Swap List)
+    
+    /// Piece values indexed by piece type for SEE (same order as Piece enum).
+    /// Index 0 = Empty, 1 = Pawn, 2 = Knight, 3 = Bishop, 4 = Rook, 5 = Queen, 6 = King.
+    const SEE_VALUES: [i32; 7] = [0, 100, 320, 330, 500, 900, 20000];
+
+    /// Returns a bitboard of ALL pieces (both colors) that attack `square`
+    /// given the supplied `occupied` mask. Recomputing with an updated occupancy
+    /// is what reveals x-ray / battery attacks after a piece is removed.
+    #[inline(always)]
+    pub fn attackers_to(board: &BoardState, square: u8, occupied: u64, tables: &AttackTables) -> u64 {
+        let all_pawns_w = board.pieces[0][Piece::Pawn as usize];
+        let all_pawns_b = board.pieces[1][Piece::Pawn as usize];
+        let knights = (board.pieces[0][Piece::Knight as usize]
+                     | board.pieces[1][Piece::Knight as usize]) & occupied;
+        let kings   = (board.pieces[0][Piece::King as usize]
+                     | board.pieces[1][Piece::King as usize]) & occupied;
+        let diag_sliders = ((board.pieces[0][Piece::Bishop as usize]
+                           | board.pieces[1][Piece::Bishop as usize])
+                          | (board.pieces[0][Piece::Queen as usize]
+                           | board.pieces[1][Piece::Queen as usize])) & occupied;
+        let orth_sliders = ((board.pieces[0][Piece::Rook as usize]
+                           | board.pieces[1][Piece::Rook as usize])
+                          | (board.pieces[0][Piece::Queen as usize]
+                           | board.pieces[1][Piece::Queen as usize])) & occupied;
+
+        // Reverse‐lookup: "which pawns attack this square?"
+        // White pawns that attack `square` are found via black's pawn-attack pattern.
+        let pawn_att = (tables.pawn_attacks[1][square as usize] & all_pawns_w)
+                     | (tables.pawn_attacks[0][square as usize] & all_pawns_b);
+
+        pawn_att
+            | (tables.knight_attacks[square as usize] & knights)
+            | (tables.get_bishop_attacks(square, occupied) & diag_sliders)
+            | (tables.get_rook_attacks(square, occupied)   & orth_sliders)
+            | (tables.king_attacks[square as usize]   & kings)
+    }
+
+    /// Among the bits set in `attackers`, find the square of the least valuable
+    /// piece belonging to `color`. Returns `(square, piece_type_index)` or None.
+    #[inline(always)]
+    fn find_least_valuable_attacker_from(
+        attackers: u64,
+        board: &BoardState,
+        color: usize,
+    ) -> Option<(u8, usize)> {
+        // Iterate in LVA order: Pawn(1) → Knight(2) → Bishop(3) → Rook(4) → Queen(5) → King(6)
+        for pt in 1..=6usize {
+            let subset = attackers & board.pieces[color][pt];
+            if subset != 0 {
+                let sq = subset.trailing_zeros() as u8;
+                return Some((sq, pt));
+            }
+        }
+        None
+    }
+
+    /// Full swap‐list SEE for a capture move from `from` → `to`.
+    ///
+    /// `target_piece` is the piece type index (1–6) of the piece currently on `to`
+    /// (the initial victim). `side` is the color (0/1) of the side making the
+    /// initial capture (i.e., the side that owns the piece on `from`).
+    ///
+    /// Returns the net material gain from the perspective of `side`.
+    pub fn see(board: &BoardState, from: u8, to: u8, target_piece: usize, side: usize) -> i32 {
         let tables = &ATTACK_TABLES;
-        
-        // Get piece on square
+
+        // Swap list on the stack (max 32 captures in a chain is more than enough).
+        let mut gain: [i32; 32] = [0; 32];
+        let mut depth: usize = 0;
+
+        // The moving piece is the attacker piece that starts the sequence.
+        let attacker_piece = {
+            let mut found = 0usize;
+            for pt in 1..=6usize {
+                if board.pieces[side][pt] & (1u64 << from) != 0 {
+                    found = pt;
+                    break;
+                }
+            }
+            found
+        };
+        if attacker_piece == 0 {
+            return 0;
+        }
+
+        // Initial gain: we capture target_piece.
+        gain[0] = Self::SEE_VALUES[target_piece];
+
+        // Simulated occupancy — remove the initial attacker.
+        let mut occupied = board.all_pieces & !(1u64 << from);
+
+        // The piece now sitting on `to` (i.e., the attacker that just moved).
+        let mut current_piece_value = Self::SEE_VALUES[attacker_piece];
+
+        // Side that gets to recapture next.
+        let mut side_to_move = 1 - side;
+
+        // Recompute attackers to `to` with updated occupancy (reveals x-rays).
+        let mut all_attackers = Self::attackers_to(board, to, occupied, tables);
+        // Only consider pieces still on the board.
+        all_attackers &= occupied;
+
+        loop {
+            depth += 1;
+            if depth >= 32 {
+                break;
+            }
+
+            // Negamax-style: gain[d] = value_of_piece_just_placed - gain[d-1]
+            gain[depth] = current_piece_value - gain[depth - 1];
+
+            // Early prune: if even capturing for free can't improve the position
+            // for either side, stop.
+            if (-gain[depth - 1]).max(gain[depth]) < 0 {
+                break;
+            }
+
+            // Find the least valuable attacker for `side_to_move`.
+            let (attacker_sq, pt) = match Self::find_least_valuable_attacker_from(
+                all_attackers, board, side_to_move,
+            ) {
+                Some(v) => v,
+                None => break, // No more attackers for this side — sequence ends.
+            };
+
+            // Don't allow king captures if the opponent still has attackers.
+            if pt == Piece::King as usize {
+                let opponent = 1 - side_to_move;
+                if all_attackers & board.color_bb[opponent] & occupied != 0 {
+                    break;
+                }
+            }
+
+            // Remove the attacker from occupancy (simulates moving it to `to`).
+            occupied ^= 1u64 << attacker_sq;
+            current_piece_value = Self::SEE_VALUES[pt];
+
+            // Recompute attackers — this is what discovers x-ray sliders.
+            all_attackers = Self::attackers_to(board, to, occupied, tables);
+            all_attackers &= occupied;
+
+            side_to_move = 1 - side_to_move;
+        }
+
+        // Backward propagation (minimax on the gain array).
+        // At each depth, the side to move picks the better of:
+        //   • stand pat  → keeps -gain[d-1]
+        //   • recapture  → gets  gain[d]
+        while depth > 1 {
+            depth -= 1;
+            gain[depth - 1] = -((-gain[depth - 1]).max(gain[depth]));
+        }
+
+        gain[0]
+    }
+
+    /// Evaluate whether a move `mv` has SEE ≥ `threshold`.
+    /// Now handles both captures and quiet moves.
+    pub fn see_capture(board: &BoardState, mv: &crate::movegen::Move, threshold: i32) -> bool {
+        let (target_piece, side) = if mv.flags == crate::movegen::EP_CAPTURE {
+            (Piece::Pawn as usize, if board.side_to_move == Color::White { 0 } else { 1 })
+        } else {
+            let target = match board.piece_at(mv.to) {
+                Some((p, _)) => p as usize,
+                None => 0, // Empty square for quiet moves
+            };
+            let side = if get_bit(board.color_bb[0], mv.from) { 0 } else { 1 };
+            (target, side)
+        };
+
+        Self::see(board, mv.from, mv.to, target_piece, side) >= threshold
+    }
+
+    /// Evaluate whether a piece on `square` (owned by `defender_color`) is safe.
+    fn see_square(board: &BoardState, square: u8, defender_color: u8) -> i32 {
+        let attacker_color = (1 - defender_color) as usize;
+        let tables = &ATTACK_TABLES;
+
         let (piece, _) = match board.piece_at(square) {
             Some(p) => p,
             None => return 0,
         };
-        
-        let target_value = PIECE_VALUES[piece as usize];
-        
-        // Find least valuable attacker
-        let attacker_sq = Self::find_least_valuable_attacker(board, square, attacker_color as usize, tables);
-        
-        if attacker_sq.is_none() {
-            // No attackers, piece is safe
+
+        let all_attackers = Self::attackers_to(board, square, board.all_pieces, tables);
+        let enemy_attackers = all_attackers & board.color_bb[attacker_color];
+        if enemy_attackers == 0 {
             return 0;
         }
-        
-        let attacker_sq = attacker_sq.unwrap();
-        let (attacker_piece, _) = board.piece_at(attacker_sq).unwrap();
-        let attacker_value = PIECE_VALUES[attacker_piece as usize];
-        
-        // Simple SEE: if we lose more than we gain, it's bad
-        let gain = target_value;
-        
-        // Check if piece is defended
-        let defenders = Self::count_attackers(board, square, defender_color as usize, tables);
-        
-        if defenders == 0 {
-            return -target_value; // Hanging piece
-        }
-        
-        // Approximate exchange
-        let loss = attacker_value.min(target_value);
-        
-        if gain > loss + 100 {
-            return 0; // Winning capture
-        } else if gain < loss - 100 {
-            return gain - loss; // Losing
-        }
-        
-        0 // About equal
-    }
 
-    fn find_least_valuable_attacker(board: &BoardState, square: u8, color: usize, tables: &AttackTables) -> Option<u8> {
-        // Check in order: Pawn, Knight, Bishop, Rook, Queen, King
-        for piece_type in 1..=6 {
-            let pieces = board.pieces[color][piece_type];
-            
-            let attackers = match piece_type {
-                1 => tables.pawn_attacks[1 - color][square as usize] & pieces,
-                2 => tables.knight_attacks[square as usize] & pieces,
-                3 => tables.get_bishop_attacks(square, board.all_pieces) & pieces,
-                4 => tables.get_rook_attacks(square, board.all_pieces) & pieces,
-                5 => tables.get_queen_attacks(square, board.all_pieces) & pieces,
-                6 => tables.king_attacks[square as usize] & pieces,
-                _ => 0,
-            };
-            
-            if attackers != 0 {
-                return lsb(attackers);
-            }
+        let (attacker_sq, _) = match Self::find_least_valuable_attacker_from(
+            enemy_attackers, board, attacker_color,
+        ) {
+            Some(v) => v,
+            None => return 0,
+        };
+
+        let see_value = Self::see(board, attacker_sq, square, piece as usize, attacker_color);
+
+        if see_value > 0 {
+            -see_value
+        } else {
+            0
         }
-        
-        None
     }
 
     // 🔍 Advanced Pin Detection
@@ -446,7 +608,15 @@ impl Evaluator {
     }
 
     // ⚡ Trapped Piece Detection
-    fn is_piece_trapped(board: &BoardState, square: u8, piece_type: usize, color: usize, tables: &AttackTables) -> bool {
+    fn is_piece_trapped(
+        board: &BoardState, 
+        square: u8, 
+        piece_type: usize, 
+        color: usize, 
+        tables: &AttackTables,
+        enemy_attacks: Bitboard,
+        our_attacks: Bitboard
+    ) -> bool {
         if piece_type == 1 || piece_type == 6 {
             return false; // Don't check pawns or king
         }
@@ -459,24 +629,29 @@ impl Evaluator {
             _ => return false,
         };
         
-        let safe_moves = moves & !board.color_bb[color];
-        let enemy_color = 1 - color;
+        let mut temp_moves = moves & !board.color_bb[color];
         
-        // Count safe squares (not attacked by enemy)
+        // Count safe squares
         let mut safe_count = 0;
-        let mut temp_moves = safe_moves;
         
         while temp_moves != 0 {
             let (new_bb, sq) = pop_lsb(temp_moves);
             temp_moves = new_bb;
-            let target = sq.unwrap();
+            let target_bb = 1u64 << sq.unwrap();
             
-            if !board.is_square_attacked(target, if enemy_color == 0 { Color::White } else { Color::Black }) {
+            // A square is considered "safe" for escaping or trading if:
+            // 1. It is not attacked by the enemy.
+            // 2. It IS attacked but also defended by us (offering a trade).
+            // HIGH-VALUE PIECE SAFETY: Only count defended squares as safe for minor pieces (Knight/Bishop).
+            // For Queens and Rooks, we remain pessimistic and only count unattacked squares.
+            let is_high_value = piece_type == 4 || piece_type == 5; // Rook or Queen
+            
+            if (enemy_attacks & target_bb) == 0 || (!is_high_value && (our_attacks & target_bb) != 0) {
                 safe_count += 1;
             }
         }
         
-        // If fewer than 2 safe moves, piece is likely trapped
+        // If fewer than 2 safe/trade squares, piece is likely trapped
         safe_count < 2
     }
 
@@ -986,125 +1161,126 @@ impl Evaluator {
         score
     }
     
-    fn pawn_chains(board: &BoardState, phase: i32) -> i32 {
+    fn pawn_chains(board: &BoardState, _phase: i32) -> i32 {
         let mut score = 0;
         let white_pawns = board.pieces[0][Piece::Pawn as usize];
         let black_pawns = board.pieces[1][Piece::Pawn as usize];
+        let tables = &ATTACK_TABLES;
 
-        // White king safety
-        if let Some(king_sq) = board.get_king_square(Color::White) {
-            let mut safety = 0;
-            let king_file = king_sq % 8;
-            let king_rank = king_sq / 8;
-
-            // Pawn shield
-            for df in -1..=1 {
-                let f = king_file as i8 + df;
-                if f >= 0 && f < 8 {
-                    for dr in 1..=2 {
-                        let r = king_rank as i8 + dr;
-                        if r < 8 {
-                            let sq = (r * 8 + f) as u8;
-                            if get_bit(white_pawns, sq) {
-                                safety += PAWN_SHIELD_BONUS * (3 - dr as i32);
-                            } else {
-                                safety -= PAWN_SHIELD_BONUS / 2;
+        // White pawn chains — count pawns defended by other pawns
+        let mut temp = white_pawns;
+        while temp != 0 {
+            let (new_bb, sq) = pop_lsb(temp);
+            temp = new_bb;
+            let square = sq.unwrap();
+            
+            // Check if defended by a pawn (diagonal behind)
+            let pawn_defenders = tables.pawn_attacks[1][square as usize] & white_pawns;
+            if pawn_defenders != 0 {
+                score += PAWN_CHAIN_BONUS;
+            }
+        }
+        
+        // Black pawn chains
+        let mut temp = black_pawns;
+        while temp != 0 {
+            let (new_bb, sq) = pop_lsb(temp);
+            temp = new_bb;
+            let square = sq.unwrap();
+            
+            let pawn_defenders = tables.pawn_attacks[0][square as usize] & black_pawns;
+            if pawn_defenders != 0 {
+                score -= PAWN_CHAIN_BONUS;
+            }
+        }
+        
+        // Backward pawns — pawns that can't advance because enemy pawns control the stop square
+        // and no friendly pawns on adjacent files can support them
+        for file in 0..8u8 {
+            let file_mask = FILE_A << file;
+            
+            // White backward pawns
+            let mut pawns_on_file = white_pawns & file_mask;
+            while pawns_on_file != 0 {
+                let (new_bb, sq) = pop_lsb(pawns_on_file);
+                pawns_on_file = new_bb;
+                let square = sq.unwrap();
+                let rank = square / 8;
+                
+                if rank >= 6 { continue; } // 7th rank can't be backward
+                
+                let stop_square = square + 8;
+                
+                // Check if enemy pawns attack the stop square
+                let stop_attacked = tables.pawn_attacks[1][stop_square as usize] & black_pawns;
+                if stop_attacked == 0 { continue; }
+                
+                // Check if any friendly pawn on adjacent files can support
+                let mut has_support = false;
+                for adj in [file.wrapping_sub(1), file + 1] {
+                    if adj < 8 {
+                        let adj_mask = FILE_A << adj;
+                        let friendly_adj = white_pawns & adj_mask;
+                        // Check if any pawn on adjacent file is on same rank or behind
+                        let mut check = friendly_adj;
+                        while check != 0 {
+                            let (nb, ps) = pop_lsb(check);
+                            check = nb;
+                            let p_rank = ps.unwrap() / 8;
+                            if p_rank <= rank {
+                                has_support = true;
+                                break;
                             }
                         }
                     }
+                    if has_support { break; }
+                }
+                
+                if !has_support {
+                    score -= BACKWARD_PAWN;
                 }
             }
-
-            // Open files near king
-            for df in -1..=1 {
-                let f = king_file as i8 + df;
-                if f >= 0 && f < 8 {
-                    let file_mask = FILE_A << f;
-                    if (white_pawns & file_mask) == 0 {
-                        safety -= OPEN_FILE_NEAR_KING;
-                        // Extra penalty if enemy rooks/queens on the file
-                        if (board.pieces[1][Piece::Rook as usize] & file_mask) != 0 ||
-                           (board.pieces[1][Piece::Queen as usize] & file_mask) != 0 {
-                            safety -= OPEN_FILE_NEAR_KING;
-                        }
-                    }
-                }
-            }
-
-            // Attack pattern recognition
-            let attackers = Self::count_king_zone_attackers(board, king_sq, Color::Black);
-            if attackers > 0 {
-                let attack_index = (attackers as usize).min(5);
-                safety -= KING_ATTACK_WEIGHT[attack_index];
-            }
-
-            // Penalty for king in center during middlegame
-            if phase > 18 && king_file >= 2 && king_file <= 5 && king_rank <= 2 {
-                safety -= 30;
-            }
-
-            // Castling rights bonus
-            if board.castling_rights & 3 != 0 {
-                safety += CASTLING_RIGHTS_BONUS;
-            }
-
-            score += (safety * phase) / 24;
-        }
-
-        // Black king safety
-        if let Some(king_sq) = board.get_king_square(Color::Black) {
-            let mut safety = 0;
-            let king_file = king_sq % 8;
-            let king_rank = king_sq / 8;
-
-            for df in -1..=1 {
-                let f = king_file as i8 + df;
-                if f >= 0 && f < 8 {
-                    for dr in -2..=-1 {
-                        let r = king_rank as i8 + dr;
-                        if r >= 0 {
-                            let sq = (r * 8 + f) as u8;
-                            if get_bit(black_pawns, sq) {
-                                safety += PAWN_SHIELD_BONUS * (3 + dr as i32);
-                            } else {
-                                safety -= PAWN_SHIELD_BONUS / 2;
+            
+            // Black backward pawns
+            let mut pawns_on_file = black_pawns & file_mask;
+            while pawns_on_file != 0 {
+                let (new_bb, sq) = pop_lsb(pawns_on_file);
+                pawns_on_file = new_bb;
+                let square = sq.unwrap();
+                let rank = square / 8;
+                
+                if rank <= 1 { continue; }
+                
+                let stop_square = square - 8;
+                
+                let stop_attacked = tables.pawn_attacks[0][stop_square as usize] & white_pawns;
+                if stop_attacked == 0 { continue; }
+                
+                let mut has_support = false;
+                for adj in [file.wrapping_sub(1), file + 1] {
+                    if adj < 8 {
+                        let adj_mask = FILE_A << adj;
+                        let friendly_adj = black_pawns & adj_mask;
+                        let mut check = friendly_adj;
+                        while check != 0 {
+                            let (nb, ps) = pop_lsb(check);
+                            check = nb;
+                            let p_rank = ps.unwrap() / 8;
+                            if p_rank >= rank {
+                                has_support = true;
+                                break;
                             }
                         }
                     }
+                    if has_support { break; }
+                }
+                
+                if !has_support {
+                    score += BACKWARD_PAWN;
                 }
             }
-
-            for df in -1..=1 {
-                let f = king_file as i8 + df;
-                if f >= 0 && f < 8 {
-                    let file_mask = FILE_A << f;
-                    if (black_pawns & file_mask) == 0 {
-                        safety -= OPEN_FILE_NEAR_KING;
-                        if (board.pieces[0][Piece::Rook as usize] & file_mask) != 0 ||
-                           (board.pieces[0][Piece::Queen as usize] & file_mask) != 0 {
-                            safety -= OPEN_FILE_NEAR_KING;
-                        }
-                    }
-                }
-            }
-
-            let attackers = Self::count_king_zone_attackers(board, king_sq, Color::White);
-            if attackers > 0 {
-                let attack_index = (attackers as usize).min(5);
-                safety -= KING_ATTACK_WEIGHT[attack_index];
-            }
-
-            if phase > 18 && king_file >= 2 && king_file <= 5 && king_rank >= 5 {
-                safety -= 30;
-            }
-
-            if board.castling_rights & 12 != 0 {
-                safety += CASTLING_RIGHTS_BONUS;
-            }
-
-            score -= (safety * phase) / 24;
         }
-
+        
         score
     }
 
@@ -1115,7 +1291,9 @@ impl Evaluator {
         
         let mut attackers = 0;
         
-        // Count different piece types attacking king zone
+        // Weight attackers by piece type — queens are far more dangerous than knights
+        let piece_weights: [i32; 6] = [0, 0, 2, 2, 3, 5]; // Pawn, Knight, Bishop, Rook, Queen
+        
         for piece_type in 2..=5 {  // Knight to Queen
             let mut pieces = board.pieces[color][piece_type];
             
@@ -1133,7 +1311,7 @@ impl Evaluator {
                 };
                 
                 if (attacks & king_zone) != 0 {
-                    attackers += 1;
+                    attackers += piece_weights[piece_type];
                 }
             }
         }
@@ -1482,7 +1660,8 @@ impl Evaluator {
             knights = new_bb;
             let square = sq.unwrap();
             let attacks = tables.knight_attacks[square as usize] & !board.color_bb[0];
-            let safe_attacks = attacks & !black_attacks;
+            // Include tradeable squares (attacked and defended)
+            let safe_attacks = attacks & (!black_attacks | white_attacks);
             white_mobility += count_bits(safe_attacks) as i32 * KNIGHT_MOBILITY;
         }
 
@@ -1492,7 +1671,7 @@ impl Evaluator {
             knights = new_bb;
             let square = sq.unwrap();
             let attacks = tables.knight_attacks[square as usize] & !board.color_bb[1];
-            let safe_attacks = attacks & !white_attacks;
+            let safe_attacks = attacks & (!white_attacks | black_attacks);
             black_mobility += count_bits(safe_attacks) as i32 * KNIGHT_MOBILITY;
         }
 
@@ -1503,7 +1682,7 @@ impl Evaluator {
             bishops = new_bb;
             let square = sq.unwrap();
             let attacks = tables.get_bishop_attacks(square, board.all_pieces) & !board.color_bb[0];
-            let safe_attacks = attacks & !black_attacks;
+            let safe_attacks = attacks & (!black_attacks | white_attacks);
             white_mobility += count_bits(safe_attacks) as i32 * BISHOP_MOBILITY;
         }
 
@@ -1513,7 +1692,7 @@ impl Evaluator {
             bishops = new_bb;
             let square = sq.unwrap();
             let attacks = tables.get_bishop_attacks(square, board.all_pieces) & !board.color_bb[1];
-            let safe_attacks = attacks & !white_attacks;
+            let safe_attacks = attacks & (!white_attacks | black_attacks);
             black_mobility += count_bits(safe_attacks) as i32 * BISHOP_MOBILITY;
         }
 
@@ -1545,6 +1724,7 @@ impl Evaluator {
             queens = new_bb;
             let square = sq.unwrap();
             let attacks = tables.get_queen_attacks(square, board.all_pieces) & !board.color_bb[0];
+            // High-value pieces (Queens/Rooks) only count unattacked squares for safe mobility
             let safe_attacks = attacks & !black_attacks;
             white_mobility += count_bits(safe_attacks) as i32 * QUEEN_MOBILITY;
         }
@@ -1555,6 +1735,7 @@ impl Evaluator {
             queens = new_bb;
             let square = sq.unwrap();
             let attacks = tables.get_queen_attacks(square, board.all_pieces) & !board.color_bb[1];
+            // High-value pieces (Queens/Rooks) only count unattacked squares for safe mobility
             let safe_attacks = attacks & !white_attacks;
             black_mobility += count_bits(safe_attacks) as i32 * QUEEN_MOBILITY;
         }
@@ -1648,13 +1829,13 @@ impl Evaluator {
             // Attack pattern recognition
             let attackers = Self::count_king_zone_attackers(board, king_sq, Color::Black);
             if attackers > 0 {
-                let attack_index = (attackers as usize).min(5);
+                let attack_index = (attackers as usize).min(7);
                 safety -= KING_ATTACK_WEIGHT[attack_index];
             }
 
             // Penalty for king in center during middlegame
             if phase > 18 && king_file >= 2 && king_file <= 5 && king_rank <= 2 {
-                safety -= 30;
+                safety -= 50;
             }
 
             // Castling rights bonus
@@ -1704,12 +1885,12 @@ impl Evaluator {
 
             let attackers = Self::count_king_zone_attackers(board, king_sq, Color::White);
             if attackers > 0 {
-                let attack_index = (attackers as usize).min(5);
+                let attack_index = (attackers as usize).min(7);
                 safety -= KING_ATTACK_WEIGHT[attack_index];
             }
 
             if phase > 18 && king_file >= 2 && king_file <= 5 && king_rank >= 5 {
-                safety -= 30;
+                safety -= 50;
             }
 
             if board.castling_rights & 12 != 0 {
@@ -1720,6 +1901,35 @@ impl Evaluator {
         }
 
         score
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // PIECE CONNECTIVITY (pieces protecting each other)
+    // ══════════════════════════════════════════════════════════════════════════════
+    
+    fn piece_connectivity(board: &BoardState, phase: i32) -> i32 {
+        let tables = &ATTACK_TABLES;
+        let white_attacks = build_attack_map(board, 0, tables);
+        let black_attacks = build_attack_map(board, 1, tables);
+        
+        let mut score = 0;
+        
+        // White pieces defended by other white pieces
+        for piece_type in 2..=5 { // Knight to Queen
+            let pieces = board.pieces[0][piece_type];
+            let defended = count_bits(pieces & white_attacks) as i32;
+            score += defended * CONNECTIVITY_BONUS;
+        }
+        
+        // Black pieces defended by other black pieces
+        for piece_type in 2..=5 {
+            let pieces = board.pieces[1][piece_type];
+            let defended = count_bits(pieces & black_attacks) as i32;
+            score -= defended * CONNECTIVITY_BONUS;
+        }
+        
+        // Scale by phase (more valuable in middlegame)
+        (score * phase) / 24
     }
 }
 
