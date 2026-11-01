@@ -1,3 +1,0 @@
-position fen rnbq1b1r/pp3kp1/5n1p/2pp4/8/1PpQ2P1/P1P1PPBP/R1B1K2R w KQ - 0 11
-go movetime 5000
-quit

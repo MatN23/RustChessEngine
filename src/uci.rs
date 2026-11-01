@@ -18,6 +18,34 @@ impl UCIEngine {
         }
     }
 
+    /// `perft <depth>`: per-root-move node counts for the current position.
+    fn perft_cmd(&mut self, args: &[&str]) {
+        let depth: u32 = args.first().and_then(|d| d.parse().ok()).unwrap_or(1);
+        let mut total = 0u64;
+        for mv in MoveGenerator::generate_legal_moves(&self.board) {
+            let mut b = self.board.clone();
+            b.make_move(&mv);
+            let n = if depth <= 1 { 1 } else { Self::perft(&b, depth - 1) };
+            println!("{}: {}", mv.to_uci(), n);
+            total += n;
+        }
+        println!("\nNodes searched: {}", total);
+    }
+
+    fn perft(board: &BoardState, depth: u32) -> u64 {
+        let moves = MoveGenerator::generate_legal_moves(board);
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+        let mut n = 0;
+        for mv in moves {
+            let mut b = board.clone();
+            b.make_move(&mv);
+            n += Self::perft(&b, depth - 1);
+        }
+        n
+    }
+
     pub fn run(&mut self) {
         let stdin = io::stdin();
         let reader = stdin.lock();
@@ -55,6 +83,7 @@ impl UCIEngine {
             }
             "setoption" => self.setoption(&parts[1..]),
             "d" => self.display(),
+            "perft" => self.perft_cmd(&parts[1..]),
             _ => {
                 if self.debug {
                     println!("info string Unknown command: {}", command);
