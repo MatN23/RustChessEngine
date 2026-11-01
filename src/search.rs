@@ -866,39 +866,53 @@ fn order_moves_internal(&self, board: &BoardState, moves: &mut MoveList, tt_move
         let killers = thread_data.killer_moves[ply];
         let history = &thread_data.history_table;
 
-        // Score each move exactly once (SEE is expensive); sorting by comparator re-scored moves O(n log n) times.
-        moves.sort_by_cached_key(|m| -self.score_move_internal(board, m, tt_move, &killers, history));
+        // Use comparator-based unstable sort to avoid key allocations and negation.
+        moves.sort_unstable_by(|a, b| {
+            let sa = self.score_move_internal(board, a, tt_move, &killers, history);
+            let sb = self.score_move_internal(board, b, tt_move, &killers, history);
+            sb.cmp(&sa)
+        });
     }
 
     #[inline(always)]
     fn score_move_internal(&self, board: &BoardState, mv: &Move, tt_move: Option<Move>, killers: &[Option<Move>; 2], history: &[[i32; 64]; 64]) -> i32 {
         // TT move has highest priority
         if let Some(hash_mv) = tt_move {
-            if mv.from == hash_mv.from && mv.to == hash_mv.to {
+            // Promotion type and move flags are part of move identity. Matching
+            // only from/to incorrectly treats every underpromotion as the TT move.
+            if *mv == hash_mv {
                 return 10_000_000;
             }
         }
 
-        // Captures (MVV-LVA + SEE)
+        // Promotions should be distinguished even when they are captures.
+        // Queen promotions are normally strongest; retain a smaller bonus for
+        // underpromotions so capture-promotion ordering is deterministic too.
+        let promotion_bonus = if mv.is_promotion() {
+            match mv.promotion_piece() {
+                Some(crate::board::Piece::Queen) => 4_000,
+                Some(crate::board::Piece::Knight) => 3_000,
+                Some(crate::board::Piece::Rook) => 2_000,
+                Some(crate::board::Piece::Bishop) => 1_000,
+                _ => 0,
+            }
+        } else {
+            0
+        };
+
+        // Captures (MVV-LVA + SEE), including capture promotions.
         if mv.is_capture() {
             if self.see_capture(board, mv, 0) {
-                // Good or equal captures: high priority
-                return 9_000_000 + self.mvv_lva_score(board, mv);
+                return 9_000_000 + self.mvv_lva_score(board, mv) + promotion_bonus;
             } else {
-                // Losing captures: dead last priority (below worst quiet moves)
-                return -200_000 + self.mvv_lva_score(board, mv);
+                // Keep losing captures below quiet moves, but distinguish promotions.
+                return -200_000 + self.mvv_lva_score(board, mv) + promotion_bonus;
             }
         }
 
-        // Promotions
+        // Quiet promotions
         if mv.is_promotion() {
-            return 8_000_000 + match mv.promotion_piece() {
-                Some(crate::board::Piece::Queen) => 4000,
-                Some(crate::board::Piece::Knight) => 3000,
-                Some(crate::board::Piece::Rook) => 2000,
-                Some(crate::board::Piece::Bishop) => 1000,
-                _ => 0,
-            };
+            return 8_000_000 + promotion_bonus;
         }
 
         // First killer move
@@ -939,9 +953,15 @@ fn order_moves_internal(&self, board: &BoardState, moves: &mut MoveList, tt_move
 
     #[inline(always)]
 fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
-        captures.sort_by_cached_key(|m| {
-            let see_bonus = if self.see_capture(board, m, 0) { 100_000 } else { 0 };
-            -(self.mvv_lva_score(board, m) + see_bonus)
+        // Comparator-based unstable sort
+        captures.sort_unstable_by(|a, b| {
+            let mut sa = -self.mvv_lva_score(board, a);
+            if self.see_capture(board, a, 0) { sa -= 100_000; }
+
+            let mut sb = -self.mvv_lva_score(board, b);
+            if self.see_capture(board, b, 0) { sb -= 100_000; }
+
+            sa.cmp(&sb)
         });
     }
 
@@ -1230,6 +1250,35 @@ mod tests {
         assert_eq!(LMR_TABLE[1][1], 0);
         assert!(LMR_TABLE[10][10] > 0);
         assert!(LMR_TABLE[20][30] < 20);
+    }
+
+    #[test]
+    fn test_tt_move_matching_distinguishes_promotions() {
+        use crate::movegen::{QUEEN_PROMOTION, ROOK_PROMOTION};
+        let board = BoardState::default();
+        let engine = SearchEngine::new(1);
+        let killers = [None, None];
+        let history = [[0; 64]; 64];
+        let queen = Move::new(48, 56, QUEEN_PROMOTION);
+        let rook = Move::new(48, 56, ROOK_PROMOTION);
+
+        assert_eq!(engine.score_move_internal(&board, &queen, Some(queen), &killers, &history), 10_000_000);
+        assert_ne!(engine.score_move_internal(&board, &rook, Some(queen), &killers, &history), 10_000_000);
+    }
+
+    #[test]
+    fn test_capture_promotion_ordering_prefers_queen() {
+        use crate::movegen::{QUEEN_PROMO_CAPTURE, ROOK_PROMO_CAPTURE};
+        let board = BoardState::default();
+        let engine = SearchEngine::new(1);
+        let killers = [None, None];
+        let history = [[0; 64]; 64];
+        let queen = Move::new(48, 57, QUEEN_PROMO_CAPTURE);
+        let rook = Move::new(48, 57, ROOK_PROMO_CAPTURE);
+
+        let queen_score = engine.score_move_internal(&board, &queen, None, &killers, &history);
+        let rook_score = engine.score_move_internal(&board, &rook, None, &killers, &history);
+        assert!(queen_score > rook_score);
     }
 
     #[test]
