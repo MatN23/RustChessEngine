@@ -1,5 +1,5 @@
 import chess, chess.engine, chess.pgn, sys, math, json, datetime
-E="/home/claude/build/release/chess_uci"; SF="/usr/games/stockfish"
+E="/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/chess_uci"; SF="/opt/homebrew/bin/stockfish"
 elo=int(sys.argv[1]); movetime=float(sys.argv[2]); npairs=int(sys.argv[3]); out=sys.argv[4]
 OPEN=["e2e4 e7e5 g1f3 b8c6","d2d4 d7d5 c2c4 e7e6","e2e4 c7c5 g1f3 d7d6","d2d4 g8f6 c2c4 g7g6","e2e4 e7e6 d2d4 d7d5","c2c4 e7e5 b1c3 g8f6","g1f3 d7d5 g2g3 g8f6","e2e4 c7c6 d2d4 d7d5"]
 eng=chess.engine.SimpleEngine.popen_uci(E); eng.configure({"Threads":1,"Hash":64})

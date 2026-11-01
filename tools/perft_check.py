@@ -19,7 +19,7 @@ def ref_push(b,m,d):
 bad=0
 for name,fen,d in POS:
     b=chess.Board(fen); want=ref(b,d)
-    out=subprocess.run(["/home/claude/build/release/chess_uci"],input=f"position fen {fen}\nperft {d}\nquit\n",capture_output=True,text=True,timeout=300).stdout
+    out=subprocess.run(["/Users/matias/Documents/Projects/AI/RustChessEngine/target/release/chess_uci"],input=f"position fen {fen}\nperft {d}\nquit\n",capture_output=True,text=True,timeout=300).stdout
     got=[l for l in out.splitlines() if l.startswith("Nodes searched")]
     got=int(got[0].split()[-1]) if got else None
     ok = got==want; bad+= not ok

@@ -866,12 +866,8 @@ fn order_moves_internal(&self, board: &BoardState, moves: &mut MoveList, tt_move
         let killers = thread_data.killer_moves[ply];
         let history = &thread_data.history_table;
 
-        // Use comparator-based unstable sort to avoid key allocations and negation.
-        moves.sort_unstable_by(|a, b| {
-            let sa = self.score_move_internal(board, a, tt_move, &killers, history);
-            let sb = self.score_move_internal(board, b, tt_move, &killers, history);
-            sb.cmp(&sa)
-        });
+        // Score each move exactly once (SEE is expensive); sorting by comparator re-scored moves O(n log n) times.
+        moves.sort_by_cached_key(|m| -self.score_move_internal(board, m, tt_move, &killers, history));
     }
 
     #[inline(always)]
@@ -943,15 +939,9 @@ fn order_moves_internal(&self, board: &BoardState, moves: &mut MoveList, tt_move
 
     #[inline(always)]
 fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
-        // Comparator-based unstable sort
-        captures.sort_unstable_by(|a, b| {
-            let mut sa = -self.mvv_lva_score(board, a);
-            if self.see_capture(board, a, 0) { sa -= 100_000; }
-
-            let mut sb = -self.mvv_lva_score(board, b);
-            if self.see_capture(board, b, 0) { sb -= 100_000; }
-
-            sa.cmp(&sb)
+        captures.sort_by_cached_key(|m| {
+            let see_bonus = if self.see_capture(board, m, 0) { 100_000 } else { 0 };
+            -(self.mvv_lva_score(board, m) + see_bonus)
         });
     }
 

@@ -84,6 +84,7 @@ impl UCIEngine {
             "setoption" => self.setoption(&parts[1..]),
             "d" => self.display(),
             "perft" => self.perft_cmd(&parts[1..]),
+            "evalterms" => crate::eval::Evaluator::debug_terms(&self.board),
             _ => {
                 if self.debug {
                     println!("info string Unknown command: {}", command);

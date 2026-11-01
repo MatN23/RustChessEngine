@@ -3,12 +3,13 @@ Lichess Bot with Ultimate Rust Chess Engine
 Expected Performance: 2800-3000+ Elo on Lichess
 """
 
-import requests
+from curl_cffi import requests
 import json
 import time
 import threading
 import os
 import sys
+from contextlib import contextmanager
 
 try:
     import chess_engine
@@ -21,13 +22,33 @@ except ImportError as e:
     exit(1)
 
 
+@contextmanager
+def open_stream(url, headers, timeout=None):
+    """curl_cffi responses are not context managers, so close them manually."""
+    response = requests.get(
+        url,
+        headers=headers,
+        impersonate="chrome",
+        stream=True,
+        timeout=timeout,
+    )
+    try:
+        yield response
+    finally:
+        response.close()
+
+
 class LichessBot:
     """Bridge between Lichess API and Ultimate Rust Engine."""
     
     def __init__(self, token: str, threads: int = 8, hash_mb: int = 2048):
         self.token = token
         self.base_url = "https://lichess.org"
-        self.headers = {"Authorization": f"Bearer {token}"}
+        self.headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "RustChessEngine/1.0"
+        }
         
         # Initialize Ultimate Rust engine
         print(f"Initializing engine with {threads} threads and {hash_mb}MB hash...")
@@ -48,9 +69,13 @@ class LichessBot:
         print(f"  Estimated Elo: 2800-3000+")
         
     def start(self):
-        """Start the bot"""
-        print("\n🚀 Starting Lichess bot with ULTIMATE RUST ENGINE...")
+        print("🚀 Starting Lichess bot with ULTIMATE RUST ENGINE...")
+
         account = self.get_account()
+
+        if not account:
+            raise RuntimeError("Failed to retrieve Lichess account.")
+
         print(f"Profile: {self.base_url}/@/{account['username']}")
         print(f"Rating: {account.get('perfs', {}).get('rapid', {}).get('rating', 'N/A')}")
         
@@ -66,12 +91,29 @@ class LichessBot:
             print("\nStopping bot...")
     
     def get_account(self):
-        """Get bot account info"""
         response = requests.get(
-            f"{self.base_url}/api/account",
-            headers=self.headers
+            "https://lichess.org/api/account",
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/json",
+                "User-Agent": "RustChessEngine/1.0"
+            },
+            impersonate="chrome",
+            timeout=20
         )
-        return response.json()
+
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Lichess API error: HTTP {response.status_code}\n"
+                f"{response.text[:1000]}"
+            )
+
+        account = response.json()
+
+        if not isinstance(account, dict):
+            raise RuntimeError(f"Unexpected account response: {account!r}")
+
+        return account
     
     def handle_events(self):
         """Listen for challenges and games"""
@@ -79,7 +121,12 @@ class LichessBot:
         
         while True:
             try:
-                with requests.get(url, headers=self.headers, stream=True, timeout=60) as response:
+                with open_stream(url, self.headers, timeout=None) as response:
+                    if response.status_code != 200:
+                        print(f"Event stream HTTP {response.status_code}: {response.text[:300]}")
+                        time.sleep(5)
+                        continue
+
                     for line in response.iter_lines():
                         if line:
                             try:
@@ -143,12 +190,26 @@ class LichessBot:
     def accept_challenge(self, challenge_id):
         """Accept a challenge"""
         url = f"{self.base_url}/api/challenge/{challenge_id}/accept"
-        requests.post(url, headers=self.headers)
+        response = requests.post(
+            url,
+            headers=self.headers,
+            impersonate="chrome",
+            timeout=20
+        )
+        if response.status_code != 200:
+            print(f"Error accepting challenge: HTTP {response.status_code}: {response.text[:300]}")
     
     def decline_challenge(self, challenge_id):
         """Decline a challenge"""
         url = f"{self.base_url}/api/challenge/{challenge_id}/decline"
-        requests.post(url, headers=self.headers)
+        response = requests.post(
+            url,
+            headers=self.headers,
+            impersonate="chrome",
+            timeout=20
+        )
+        if response.status_code != 200:
+            print(f"Error declining challenge: HTTP {response.status_code}: {response.text[:300]}")
     
     def play_game(self, game_id):
         """Play a game using Ultimate Rust Engine"""
@@ -164,7 +225,7 @@ class LichessBot:
         
         for attempt in range(max_retries):
             try:
-                with requests.get(url, headers=self.headers, stream=True, timeout=30) as response:
+                with open_stream(url, self.headers, timeout=None) as response:
                     if response.status_code == 429:
                         print(f"Rate limited (429) on {game_id}. Waiting {backoff}s...")
                         time.sleep(backoff)
@@ -172,7 +233,7 @@ class LichessBot:
                         continue
                         
                     if response.status_code != 200:
-                        print(f"Error connecting: {response.status_code}")
+                        print(f"Error connecting: HTTP {response.status_code}: {response.text[:300]}")
                         break
                     
                     # Connection successful, reset backoff for inner loop
@@ -205,8 +266,7 @@ class LichessBot:
                                     print(f"  White: {event.get('white', {}).get('name', 'Unknown')} ({event.get('white', {}).get('rating', '?')})")
                                     print(f"  Black: {event.get('black', {}).get('name', 'Unknown')} ({event.get('black', {}).get('rating', '?')})")
                                     
-                                    if my_color == 'white' and event['state']['moves'] == '':
-                                        self.make_move(game_id, current_fen, event['state'], my_color, move_times)
+                                    self.make_move(game_id, current_fen, event['state'], my_color, move_times)
                                 
                                 elif event_type == 'gameState':
                                     self.stop_pondering()
@@ -412,10 +472,15 @@ class LichessBot:
     def send_move(self, game_id, move_uci):
         """Send move to Lichess"""
         url = f"{self.base_url}/api/bot/game/{game_id}/move/{move_uci}"
-        response = requests.post(url, headers=self.headers)
-        
+        response = requests.post(
+            url,
+            headers=self.headers,
+            impersonate="chrome",
+            timeout=20
+        )
+
         if response.status_code != 200:
-            print(f"Error sending move: {response.text}")
+            print(f"Error sending move: HTTP {response.status_code}: {response.text[:500]}")
 
     def stop_pondering(self):
         """Stop any ongoing pondering search."""
