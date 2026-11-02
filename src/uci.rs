@@ -18,6 +18,50 @@ impl UCIEngine {
         }
     }
 
+    /// Print per-root-move node counts for the current position.
+    /// Usage: perft <depth>
+    fn perft_cmd(&self, args: &[&str]) {
+        let depth = match args.first().and_then(|value| value.parse::<u32>().ok()) {
+            Some(depth) if depth <= 12 => depth,
+            _ => {
+                println!("info string Usage: perft <depth 0..=12>");
+                return;
+            }
+        };
+
+        if depth == 0 {
+            println!("Nodes searched: 1");
+            return;
+        }
+
+        let mut total = 0u64;
+        for mv in MoveGenerator::generate_legal_moves(&self.board) {
+            let mut child = self.board.clone();
+            child.make_move(&mv);
+            let nodes = Self::perft_nodes(&child, depth - 1);
+            println!("{}: {}", mv.to_uci(), nodes);
+            total = total.saturating_add(nodes);
+        }
+        println!("Nodes searched: {}", total);
+    }
+
+    fn perft_nodes(board: &BoardState, depth: u32) -> u64 {
+        if depth == 0 {
+            return 1;
+        }
+
+        let moves = MoveGenerator::generate_legal_moves(board);
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+
+        moves.into_iter().fold(0u64, |total, mv| {
+            let mut child = board.clone();
+            child.make_move(&mv);
+            total.saturating_add(Self::perft_nodes(&child, depth - 1))
+        })
+    }
+
     pub fn run(&mut self) {
         let stdin = io::stdin();
         let reader = stdin.lock();
@@ -55,6 +99,8 @@ impl UCIEngine {
             }
             "setoption" => self.setoption(&parts[1..]),
             "d" => self.display(),
+            "perft" => self.perft_cmd(&parts[1..]),
+            "evalterms" => crate::eval::Evaluator::debug_terms(&self.board),
             _ => {
                 if self.debug {
                     println!("info string Unknown command: {}", command);
