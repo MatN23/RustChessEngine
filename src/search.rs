@@ -45,6 +45,8 @@ pub struct SearchEngine {
     
     // Per-thread data
     thread_data: Arc<Vec<Mutex<ThreadData>>>,
+    // Serialize searches while allowing stop() to signal the active search.
+    search_lock: Mutex<()>,
 }
 
 struct ThreadData {
@@ -94,15 +96,18 @@ impl SearchEngine {
             multi_pv: 1,
             contempt: 20,
             thread_data: Arc::new(thread_data),
+            search_lock: Mutex::new(()),
         }
     }
 
     pub fn search(
-        &mut self,
+        &self,
         board: BoardState,
         max_depth: u8,
         time_ms: Option<u64>,
     ) -> SearchResult {
+        let _search_guard = self.search_lock.lock();
+
         self.nodes.store(0, Ordering::Relaxed);
         self.stop.store(false, Ordering::Relaxed);
 
@@ -1083,7 +1088,8 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
         false
     }
 
-    pub fn new_game(&mut self) {
+    pub fn new_game(&self) {
+        let _search_guard = self.search_lock.lock();
         // Advance the generation so old entries are preferred for replacement
         // without discarding all transpositions at every new game.
         self.tt.write().increment_age();
@@ -1114,15 +1120,19 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
         self.multi_pv = count.clamp(1, 5);
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
+        // Deliberately does not take search_lock: callers must be able to
+        // interrupt the search that currently owns that lock.
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    pub fn clear_tt(&mut self) {
+    pub fn clear_tt(&self) {
+        let _search_guard = self.search_lock.lock();
         self.tt.write().clear();
     }
 
-    pub fn set_hash_size(&mut self, size_mb: usize) {
+    pub fn set_hash_size(&self, size_mb: usize) {
+        let _search_guard = self.search_lock.lock();
         self.tt.write().resize(size_mb);
     }
 }
