@@ -13,5 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Check PyO3 library build
+        run: cargo check --lib
       - name: Run engine unit tests
         run: cargo test --no-default-features --bin chess_uci
