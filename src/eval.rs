@@ -27,11 +27,10 @@ const FIANCHETTO_BONUS: i32 = 18;
 const DOUBLED_PAWN: i32 = 25;
 const ISOLATED_PAWN: i32 = 30;
 const BACKWARD_PAWN: i32 = 20;
-const PASSED_PAWN_BONUS: [i32; 8] = [0, 15, 30, 60, 110, 180, 300, 0];
-const PROTECTED_PASSED_PAWN: [i32; 8] = [0, 8, 15, 30, 55, 90, 150, 0];
+const PASSED_PAWN_BONUS: [i32; 8] = [0, 8, 15, 30, 55, 90, 180, 0];
+const PROTECTED_PASSED_PAWN: [i32; 8] = [0, 4, 8, 14, 22, 35, 50, 0];
 const CANDIDATE_PASSED: [i32; 8] = [0, 8, 12, 22, 38, 60, 100, 0];
 const PAWN_CHAIN_BONUS: i32 = 10;
-const PAWN_STORM_BONUS: i32 = 15;
 
 // King Safety (much stronger)
 const PAWN_SHIELD_BONUS: i32 = 20;
@@ -202,6 +201,8 @@ impl Evaluator {
         let (mg, eg) = Self::material_and_pst(board);
         eprintln!("phase={} material+pst mg={} eg={} tapered={}", phase, mg, eg, Self::tapered_eval(mg, eg, phase));
         eprintln!("pawn_structure   {}", Self::pawn_structure(board, phase));
+        eprintln!("passed_pawns     {}", Self::passed_pawn_evaluation(board, phase));
+        eprintln!("pawn_chains      {}", Self::pawn_chains(board, phase));
         eprintln!("mobility         {}", Self::piece_mobility_safe(board, phase));
         eprintln!("king_safety      {}", Self::king_safety_advanced(board, phase));
         eprintln!("space            {}", Self::space_evaluation(board, phase));
@@ -214,7 +215,7 @@ impl Evaluator {
 
     pub fn evaluate(board: &BoardState) -> i32 {
         // Quick draw detection
-        if board.halfmove_clock >= 100 {
+        if board.is_insufficient_material() || board.halfmove_clock >= 100 {
             return 0;
         }
 
@@ -533,168 +534,145 @@ impl Evaluator {
         
         // Pawn chains
         score += Self::pawn_chains(board, phase);
-        
-        // Pawn storms
-        score += Self::pawn_storms(board, phase);
+
+        // Pawn-storm scoring is omitted until castling side and actual attack
+        // potential are evaluated rather than inferred from file proximity.
 
         score
     }
 
     // 🏰 Pawn Storm Evaluation
-    fn pawn_storms(board: &BoardState, phase: i32) -> i32 {
-        let mut score = 0;
-        
-        // Only relevant in middlegame with opposite side castling
-        if phase < 12 {
-            return 0;
-        }
-        
-        let white_king_sq = board.get_king_square(Color::White);
-        let black_king_sq = board.get_king_square(Color::Black);
-        
-        if white_king_sq.is_none() || black_king_sq.is_none() {
-            return 0;
-        }
-        
-        let wk_sq = white_king_sq.unwrap();
-        let bk_sq = black_king_sq.unwrap();
-        
-        let wk_file = wk_sq % 8;
-        let bk_file = bk_sq % 8;
-        
-        // White pawn storm against black king
-        let mut white_pawns = board.pieces[0][Piece::Pawn as usize];
-        while white_pawns != 0 {
-            let (new_bb, sq) = pop_lsb(white_pawns);
-            white_pawns = new_bb;
-            let square = sq.unwrap();
-            let rank = square / 8;
-            let file = square % 8;
-            
-            // Bonus for advancing pawns near enemy king
-            if (file as i32 - bk_file as i32).abs() <= 1 && rank >= 4 {
-                score += PAWN_STORM_BONUS * (rank as i32 - 3);
-            }
-        }
-        
-        // Black pawn storm against white king
-        let mut black_pawns = board.pieces[1][Piece::Pawn as usize];
-        while black_pawns != 0 {
-            let (new_bb, sq) = pop_lsb(black_pawns);
-            black_pawns = new_bb;
-            let square = sq.unwrap();
-            let rank = square / 8;
-            let file = square % 8;
-            
-            if (file as i32 - wk_file as i32).abs() <= 1 && rank <= 3 {
-                score -= PAWN_STORM_BONUS * (4 - rank as i32);
-            }
-        }
-        
-        score
-    }
-
     fn passed_pawn_evaluation(board: &BoardState, phase: i32) -> i32 {
         let mut score = 0;
         let white_pawns = board.pieces[0][Piece::Pawn as usize];
         let black_pawns = board.pieces[1][Piece::Pawn as usize];
 
-        // White passed pawns
-        let mut temp = white_pawns;
-        while temp != 0 {
-            let (new_bb, sq) = pop_lsb(temp);
-            temp = new_bb;
-            let square = sq.unwrap();
+        let mut white = white_pawns;
+        while white != 0 {
+            let (remaining, square_opt) = pop_lsb(white);
+            white = remaining;
+            let square = square_opt.unwrap();
             let file = square % 8;
             let rank = square / 8;
 
-            let mut ahead_mask = 0u64;
+            let mut enemy_pawns_ahead = 0u64;
             for r in (rank + 1)..8 {
                 if file > 0 {
-                    ahead_mask = set_bit(ahead_mask, r * 8 + file - 1);
+                    enemy_pawns_ahead = set_bit(enemy_pawns_ahead, r * 8 + file - 1);
                 }
-                ahead_mask = set_bit(ahead_mask, r * 8 + file);
+                enemy_pawns_ahead = set_bit(enemy_pawns_ahead, r * 8 + file);
                 if file < 7 {
-                    ahead_mask = set_bit(ahead_mask, r * 8 + file + 1);
+                    enemy_pawns_ahead = set_bit(enemy_pawns_ahead, r * 8 + file + 1);
                 }
             }
 
-            if (black_pawns & ahead_mask) == 0 {
+            if black_pawns & enemy_pawns_ahead == 0 {
                 let mut bonus = PASSED_PAWN_BONUS[rank as usize];
-                
-                // Protected passed pawn
-                let protection_mask = if file > 0 { 1u64 << (square - 9) } else { 0 } |
-                                     if file < 7 { 1u64 << (square - 7) } else { 0 };
-                if (white_pawns & protection_mask) != 0 {
+                let mut protection_mask = 0u64;
+                if file > 0 && square >= 9 {
+                    protection_mask |= 1u64 << (square - 9);
+                }
+                if file < 7 && square >= 7 {
+                    protection_mask |= 1u64 << (square - 7);
+                }
+                if white_pawns & protection_mask != 0 {
                     bonus += PROTECTED_PASSED_PAWN[rank as usize];
                 }
-                
-                // King proximity (more important in endgame)
+
+                // A piece in the promotion file can blockade the pawn.
+                let mut blockaded = false;
+                for r in (rank + 1)..8 {
+                    if get_bit(board.all_pieces, r * 8 + file) {
+                        blockaded = true;
+                        break;
+                    }
+                }
+                if blockaded {
+                    bonus /= 2;
+                }
+
+                // Use the queening square for king proximity. A distant king
+                // must not generate a negative proximity bonus.
+                let promotion_square = 56 + file;
                 if let Some(king_sq) = board.get_king_square(Color::White) {
-                    let king_dist = ((king_sq / 8) as i32 - rank as i32).abs() + 
-                                   ((king_sq % 8) as i32 - file as i32).abs();
-                    bonus += ((8 - king_dist) * (24 - phase)) / 8;
+                    let distance = ((king_sq / 8) as i32 - (promotion_square / 8) as i32)
+                        .abs()
+                        .max(((king_sq % 8) as i32 - (promotion_square % 8) as i32).abs());
+                    bonus += ((7 - distance).max(0) * (24 - phase)) / 12;
                 }
-                
-                // Enemy king distance (penalty if enemy king is close)
                 if let Some(enemy_king_sq) = board.get_king_square(Color::Black) {
-                    let enemy_king_dist = ((enemy_king_sq / 8) as i32 - rank as i32).abs() + 
-                                         ((enemy_king_sq % 8) as i32 - file as i32).abs();
-                    bonus -= ((8 - enemy_king_dist) * (24 - phase)) / 12;
+                    let distance = ((enemy_king_sq / 8) as i32 - (promotion_square / 8) as i32)
+                        .abs()
+                        .max(((enemy_king_sq % 8) as i32 - (promotion_square % 8) as i32).abs());
+                    bonus -= ((7 - distance).max(0) * (24 - phase)) / 8;
                 }
-                
                 score += bonus;
             }
         }
 
-        // Black passed pawns
-        let mut temp = black_pawns;
-        while temp != 0 {
-            let (new_bb, sq) = pop_lsb(temp);
-            temp = new_bb;
-            let square = sq.unwrap();
+        let mut black = black_pawns;
+        while black != 0 {
+            let (remaining, square_opt) = pop_lsb(black);
+            black = remaining;
+            let square = square_opt.unwrap();
             let file = square % 8;
             let rank = square / 8;
 
-            let mut ahead_mask = 0u64;
-            for r in (0..rank).rev() {
+            let mut enemy_pawns_ahead = 0u64;
+            for r in 0..rank {
                 if file > 0 {
-                    ahead_mask = set_bit(ahead_mask, r * 8 + file - 1);
+                    enemy_pawns_ahead = set_bit(enemy_pawns_ahead, r * 8 + file - 1);
                 }
-                ahead_mask = set_bit(ahead_mask, r * 8 + file);
+                enemy_pawns_ahead = set_bit(enemy_pawns_ahead, r * 8 + file);
                 if file < 7 {
-                    ahead_mask = set_bit(ahead_mask, r * 8 + file + 1);
+                    enemy_pawns_ahead = set_bit(enemy_pawns_ahead, r * 8 + file + 1);
                 }
             }
 
-            if (white_pawns & ahead_mask) == 0 {
-                let mut bonus = PASSED_PAWN_BONUS[(7 - rank) as usize];
-                
-                let protection_mask = if file > 0 { 1u64 << (square + 7) } else { 0 } |
-                                     if file < 7 { 1u64 << (square + 9) } else { 0 };
-                if (black_pawns & protection_mask) != 0 {
-                    bonus += PROTECTED_PASSED_PAWN[(7 - rank) as usize];
+            if white_pawns & enemy_pawns_ahead == 0 {
+                let relative_rank = (7 - rank) as usize;
+                let mut bonus = PASSED_PAWN_BONUS[relative_rank];
+                let mut protection_mask = 0u64;
+                if file > 0 && square + 7 < 64 {
+                    protection_mask |= 1u64 << (square + 7);
                 }
-                
+                if file < 7 && square + 9 < 64 {
+                    protection_mask |= 1u64 << (square + 9);
+                }
+                if black_pawns & protection_mask != 0 {
+                    bonus += PROTECTED_PASSED_PAWN[relative_rank];
+                }
+
+                let mut blockaded = false;
+                for r in 0..rank {
+                    if get_bit(board.all_pieces, r * 8 + file) {
+                        blockaded = true;
+                        break;
+                    }
+                }
+                if blockaded {
+                    bonus /= 2;
+                }
+
+                let promotion_square = file;
                 if let Some(king_sq) = board.get_king_square(Color::Black) {
-                    let king_dist = ((king_sq / 8) as i32 - rank as i32).abs() + 
-                                   ((king_sq % 8) as i32 - file as i32).abs();
-                    bonus += ((8 - king_dist) * (24 - phase)) / 8;
+                    let distance = ((king_sq / 8) as i32 - (promotion_square / 8) as i32)
+                        .abs()
+                        .max(((king_sq % 8) as i32 - (promotion_square % 8) as i32).abs());
+                    bonus += ((7 - distance).max(0) * (24 - phase)) / 12;
                 }
-                
                 if let Some(enemy_king_sq) = board.get_king_square(Color::White) {
-                    let enemy_king_dist = ((enemy_king_sq / 8) as i32 - rank as i32).abs() + 
-                                         ((enemy_king_sq % 8) as i32 - file as i32).abs();
-                    bonus -= ((8 - enemy_king_dist) * (24 - phase)) / 12;
+                    let distance = ((enemy_king_sq / 8) as i32 - (promotion_square / 8) as i32)
+                        .abs()
+                        .max(((enemy_king_sq % 8) as i32 - (promotion_square % 8) as i32).abs());
+                    bonus -= ((7 - distance).max(0) * (24 - phase)) / 8;
                 }
-                
                 score -= bonus;
             }
         }
-
         score
     }
-    
+
     fn pawn_chains(board: &BoardState, _phase: i32) -> i32 {
         let mut score = 0;
         let white_pawns = board.pieces[0][Piece::Pawn as usize];
@@ -968,50 +946,46 @@ impl Evaluator {
     // 🎨 Fianchetto Pattern Recognition
     fn fianchetto_patterns(board: &BoardState) -> i32 {
         let mut score = 0;
-        
-        // White fianchetto squares: b2, g2
         let white_bishops = board.pieces[0][Piece::Bishop as usize];
         let white_pawns = board.pieces[0][Piece::Pawn as usize];
-        
-        // Kingside fianchetto (g2 bishop, f3, g3, h3 pawns)
-        if get_bit(white_bishops, 6) {  // g1 becomes 6 in our notation
-            let supporting_pawns = get_bit(white_pawns, 14) || get_bit(white_pawns, 15);  // f2, g2
-            if supporting_pawns {
-                score += FIANCHETTO_BONUS;
-            }
-        }
-        
-        // Queenside fianchetto (b2 bishop)
-        if get_bit(white_bishops, 1) {
-            let supporting_pawns = get_bit(white_pawns, 9) || get_bit(white_pawns, 10);  // a2, b2
-            if supporting_pawns {
-                score += FIANCHETTO_BONUS;
-            }
-        }
-        
-        // Black fianchetto
         let black_bishops = board.pieces[1][Piece::Bishop as usize];
         let black_pawns = board.pieces[1][Piece::Pawn as usize];
-        
-        // Kingside (g7)
-        if get_bit(black_bishops, 62) {
-            let supporting_pawns = get_bit(black_pawns, 54) || get_bit(black_pawns, 55);
-            if supporting_pawns {
-                score -= FIANCHETTO_BONUS;
-            }
+
+        // White kingside: bishop g2, supported by f2, g3, or h2.
+        if get_bit(white_bishops, 14)
+            && (get_bit(white_pawns, 13)
+                || get_bit(white_pawns, 22)
+                || get_bit(white_pawns, 15))
+        {
+            score += FIANCHETTO_BONUS;
         }
-        
-        // Queenside (b7)
-        if get_bit(black_bishops, 57) {
-            let supporting_pawns = get_bit(black_pawns, 49) || get_bit(black_pawns, 50);
-            if supporting_pawns {
-                score -= FIANCHETTO_BONUS;
-            }
+        // White queenside: bishop b2, supported by a2, b3, or c2.
+        if get_bit(white_bishops, 9)
+            && (get_bit(white_pawns, 8)
+                || get_bit(white_pawns, 17)
+                || get_bit(white_pawns, 10))
+        {
+            score += FIANCHETTO_BONUS;
         }
-        
+        // Black kingside: bishop g7, supported by f7, g6, or h7.
+        if get_bit(black_bishops, 54)
+            && (get_bit(black_pawns, 53)
+                || get_bit(black_pawns, 46)
+                || get_bit(black_pawns, 55))
+        {
+            score -= FIANCHETTO_BONUS;
+        }
+        // Black queenside: bishop b7, supported by a7, b6, or c7.
+        if get_bit(black_bishops, 49)
+            && (get_bit(black_pawns, 48)
+                || get_bit(black_pawns, 41)
+                || get_bit(black_pawns, 50))
+        {
+            score -= FIANCHETTO_BONUS;
+        }
         score
     }
-    
+
     fn bad_bishop_penalty(board: &BoardState) -> i32 {
         let mut score = 0;
         let white_pawns = board.pieces[0][Piece::Pawn as usize];
@@ -1524,4 +1498,34 @@ fn build_attack_map(board: &BoardState, color: usize, tables: &AttackTables) -> 
     }
     
     attacks
+}
+
+#[cfg(test)]
+mod evaluation_regression_tests {
+    use super::*;
+    use crate::board::BoardState;
+
+    #[test]
+    fn dead_material_evaluates_to_zero() {
+        let board =
+            BoardState::from_fen("7k/8/8/8/8/8/4B3/4K3 w - - 0 1").unwrap();
+        assert_eq!(Evaluator::evaluate(&board), 0);
+    }
+
+    #[test]
+    fn fianchetto_bonus_uses_g2_not_g1() {
+        let g2_bishop =
+            BoardState::from_fen("7k/8/8/8/8/8/5PB1/7K w - - 0 1").unwrap();
+        let g1_bishop =
+            BoardState::from_fen("7k/8/8/8/8/8/5P2/6BK w - - 0 1").unwrap();
+        assert_eq!(Evaluator::fianchetto_patterns(&g2_bishop), FIANCHETTO_BONUS);
+        assert_eq!(Evaluator::fianchetto_patterns(&g1_bishop), 0);
+    }
+
+    #[test]
+    fn black_fianchetto_bonus_uses_g7_not_g8() {
+        let g7_bishop =
+            BoardState::from_fen("7k/5pb1/8/8/8/8/8/7K w - - 0 1").unwrap();
+        assert_eq!(Evaluator::fianchetto_patterns(&g7_bishop), -FIANCHETTO_BONUS);
+    }
 }

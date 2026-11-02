@@ -116,6 +116,16 @@ impl SearchEngine {
             thread_data.lock().clear();
         }
 
+        // A dead position has no legal best move to return.
+        if board.is_insufficient_material() {
+            return SearchResult {
+                best_move: None,
+                score: 0,
+                nodes: 0,
+                pv_lines: Vec::new(),
+            };
+        }
+
         // Opening book probe
         if board.fullmove_number <= 15 {
             if let Some(book_move_uci) = opening_book::probe_book(&board.to_fen()) {
@@ -134,11 +144,37 @@ impl SearchEngine {
             }
         }
 
+        let mut legal_moves = MoveGenerator::generate_legal_moves(&board);
+        if legal_moves.is_empty() {
+            let score = if board.is_in_check(board.side_to_move) {
+                -MATE_SCORE
+            } else {
+                -self.contempt
+            };
+            return SearchResult {
+                best_move: None,
+                score,
+                nodes: 0,
+                pv_lines: Vec::new(),
+            };
+        }
+
+        // Keep a useful fallback if a very short time limit interrupts the
+        // first iteration; the old fallback was just the first generated move.
+        let mut best_move = None;
+        let mut best_score = -INFINITY;
+        for mv in legal_moves.drain(..) {
+            let mut child = board.clone();
+            child.make_move(&mv);
+            let score = -Evaluator::evaluate(&child);
+            if score > best_score {
+                best_score = score;
+                best_move = Some(mv);
+            }
+        }
+
         let start_time = Instant::now();
         let time_limit = time_ms.map(Duration::from_millis);
-
-        let mut best_move = MoveGenerator::generate_legal_moves(&board).first().copied();
-        let mut best_score = 0;
         let mut prev_score = 0;
         let pv_lines = Vec::new();
 
@@ -502,6 +538,10 @@ impl SearchEngine {
             return Evaluator::evaluate(board);
         }
 
+        if board.is_insufficient_material() {
+            return 0;
+        }
+
         // Draw detection
         if board.halfmove_clock >= 100 || board.is_repetition() {
             return -self.contempt;
@@ -635,14 +675,6 @@ impl SearchEngine {
                 }
             }
 
-            // SEE pruning for quiet moves: don't play moves that walk into danger
-            if !pv_node && !in_check && depth <= 7 && move_count > 0 && !mv.is_capture() && !mv.is_promotion() {
-                if !self.see_capture(board, &mv, -(depth as i32 * 20)) {
-                    move_count += 1;
-                    continue;
-                }
-            }
-
             // History pruning: skip quiet moves with very bad history at shallow depths
             if !pv_node && !in_check && depth <= 5 && move_count > 3 && !mv.is_capture() && !mv.is_promotion() {
                 let h = thread_data.history_table[mv.from as usize][mv.to as usize];
@@ -655,16 +687,18 @@ impl SearchEngine {
             let mut new_board = board.clone();
             new_board.make_move(&mv);
 
-            // Futility pruning (tightened margins)
-            let futile = !in_check
+            // Futility pruning is restricted to shallow non-PV nodes. The old
+            // version also pruned PV nodes and used a margin up to 720 cp.
+            let futile = !pv_node
+                && !in_check
                 && !new_board.is_in_check(new_board.side_to_move)
                 && !mv.is_capture()
                 && !mv.is_promotion()
                 && move_count > 0
-                && depth <= 6;
+                && depth <= 3;
 
             if futile {
-                let futility_margin = 120 + 100 * depth as i32;
+                let futility_margin = 100 + 80 * depth as i32;
                 if static_eval + futility_margin <= alpha {
                     move_count += 1;
                     continue;
@@ -844,11 +878,14 @@ impl SearchEngine {
             return 0;
         }
 
-        if depth < -16 {
-            return Evaluator::evaluate(board);
+        if board.is_insufficient_material() {
+            return 0;
         }
 
         let in_check = board.is_in_check(board.side_to_move);
+        if depth < -16 && !in_check {
+            return Evaluator::evaluate(board);
+        }
         let stand_pat = if in_check {
             -INFINITY
         } else {
@@ -1456,5 +1493,37 @@ mod search_regression_tests {
 
         let stored_loss = score_to_tt(-MATE_SCORE + 9, 3);
         assert_eq!(score_from_tt(stored_loss, 7), -MATE_SCORE + 13);
+    }
+
+    #[test]
+    fn search_returns_no_move_for_dead_material() {
+        let board =
+            BoardState::from_fen("7k/8/8/8/8/8/4B3/4K3 w - - 0 1").unwrap();
+        let engine = SearchEngine::new(1);
+        let result = engine.search(board, 8, None);
+        assert!(result.best_move.is_none());
+        assert_eq!(result.score, 0);
+    }
+
+    #[test]
+    fn zero_depth_fallback_chooses_the_best_static_child() {
+        let board = BoardState::from_fen(
+            "rnbqk2r/pp2ppbp/2p2np1/3p4/2P5/2NBPN2/PP1P1PPP/R1BQK2R w KQkq - 2 20",
+        ).unwrap();
+        let mut expected_move = None;
+        let mut expected_score = -INFINITY;
+        for mv in MoveGenerator::generate_legal_moves(&board) {
+            let mut child = board.clone();
+            child.make_move(&mv);
+            let score = -Evaluator::evaluate(&child);
+            if score > expected_score {
+                expected_score = score;
+                expected_move = Some(mv);
+            }
+        }
+        let engine = SearchEngine::new(1);
+        let result = engine.search(board, 0, None);
+        assert_eq!(result.best_move, expected_move);
+        assert_eq!(result.score, expected_score);
     }
 }

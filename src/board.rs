@@ -285,53 +285,51 @@ impl BoardState {
         moves.is_empty() || self.is_draw()
     }
 
-    fn is_insufficient_material(&self) -> bool {
-        let total_pieces = count_bits(self.all_pieces);
-        
-        // K vs K
-        if total_pieces == 2 {
-            return true;
-        }
-
-        let white_knights = count_bits(self.pieces[0][Piece::Knight as usize]);
-        let black_knights = count_bits(self.pieces[1][Piece::Knight as usize]);
-        let white_bishops = count_bits(self.pieces[0][Piece::Bishop as usize]);
-        let black_bishops = count_bits(self.pieces[1][Piece::Bishop as usize]);
-        let white_minors = white_knights + white_bishops;
-        let black_minors = black_knights + black_bishops;
-        let total_minors = white_minors + black_minors;
-
-        // No pawns, queens, or rooks
-        let major_material = count_bits(self.pieces[0][Piece::Pawn as usize] | self.pieces[1][Piece::Pawn as usize] |
-                                      self.pieces[0][Piece::Rook as usize] | self.pieces[1][Piece::Rook as usize] |
-                                      self.pieces[0][Piece::Queen as usize] | self.pieces[1][Piece::Queen as usize]);
-        
-        if major_material > 0 {
+    /// Returns true when the material makes checkmate impossible.
+    ///
+    /// K+NN vs K is excluded: it is usually drawn in practice, but checkmate
+    /// is possible with cooperation, so it is not a dead position.
+    pub fn is_insufficient_material(&self) -> bool {
+        let major_material = self.pieces[0][Piece::Pawn as usize]
+            | self.pieces[1][Piece::Pawn as usize]
+            | self.pieces[0][Piece::Rook as usize]
+            | self.pieces[1][Piece::Rook as usize]
+            | self.pieces[0][Piece::Queen as usize]
+            | self.pieces[1][Piece::Queen as usize];
+        if major_material != 0 {
             return false;
         }
 
-        // K+M vs K
-        if total_pieces == 3 && total_minors == 1 {
+        let total_knights = count_bits(
+            self.pieces[0][Piece::Knight as usize] | self.pieces[1][Piece::Knight as usize]
+        );
+        let all_bishops =
+            self.pieces[0][Piece::Bishop as usize] | self.pieces[1][Piece::Bishop as usize];
+        let total_bishops = count_bits(all_bishops);
+        let total_minors = total_knights + total_bishops;
+
+        if total_minors <= 1 {
             return true;
         }
+        if total_knights != 0 {
+            return false;
+        }
 
-        // K+B vs K+B
-        if total_pieces == 4 && white_bishops == 1 && black_bishops == 1 {
-            let white_bishop_sq = lsb(self.pieces[0][Piece::Bishop as usize]).unwrap();
-            let black_bishop_sq = lsb(self.pieces[1][Piece::Bishop as usize]).unwrap();
-            
-            // Check if bishops are on the same color
-            if is_light_square(white_bishop_sq) == is_light_square(black_bishop_sq) {
-                return true;
+        // With bishops only, all bishops must be on the same square color.
+        let first_bishop = match lsb(all_bishops) {
+            Some(square) => square,
+            None => return true,
+        };
+        let bishop_color = is_light_square(first_bishop);
+        let mut bishops = all_bishops & !(1u64 << first_bishop);
+        while bishops != 0 {
+            let (remaining, square) = pop_lsb(bishops);
+            bishops = remaining;
+            if is_light_square(square.unwrap()) != bishop_color {
+                return false;
             }
         }
-
-        // K+N+N vs K (Technically not a forced draw by FIDE but practically drawn in most engines)
-        if total_pieces == 4 && (white_knights == 2 || black_knights == 2) && total_minors == 2 {
-            return true;
-        }
-
-        false
+        true
     }
 
     fn compute_hash(&self) -> u64 {
@@ -562,5 +560,26 @@ mod repetition_regression_tests {
 
         board.position_history.push(board.hash);
         assert!(board.is_repetition());
+    }
+
+    #[test]
+    fn insufficient_material_matches_dead_position_cases() {
+        let bishop_vs_king =
+            BoardState::from_fen("7k/8/8/8/8/8/4B3/4K3 w - - 0 1").unwrap();
+        let knight_vs_king =
+            BoardState::from_fen("7k/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
+        let same_color_bishops =
+            BoardState::from_fen("7k/8/8/8/2b5/8/4B3/4K3 w - - 0 1").unwrap();
+        let opposite_color_bishops =
+            BoardState::from_fen("7k/8/8/8/1b6/8/4B3/4K3 w - - 0 1").unwrap();
+        let two_knights_vs_king =
+            BoardState::from_fen("7k/8/8/8/8/8/4NN2/4K3 w - - 0 1").unwrap();
+
+        assert!(bishop_vs_king.is_insufficient_material());
+        assert!(knight_vs_king.is_insufficient_material());
+        assert!(same_color_bishops.is_insufficient_material());
+        assert!(!opposite_color_bishops.is_insufficient_material());
+        assert!(!two_knights_vs_king.is_insufficient_material());
+        assert!(!two_knights_vs_king.is_draw());
     }
 }
