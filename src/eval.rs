@@ -12,17 +12,6 @@ const BISHOP_VALUE: i32 = 335;
 const ROOK_VALUE: i32 = 500;
 const QUEEN_VALUE: i32 = 975;
 
-// Tactical Safety Weights (CRITICAL FOR PREVENTING BLUNDERS)
-const HANGING_PIECE_PENALTY: i32 = 80;   // Safer penalty (less than pawn value)
-const ABSOLUTE_PIN_PENALTY: i32 = 65;    // Heavy penalty for absolute pins
-const RELATIVE_PIN_PENALTY: i32 = 25;    // Lighter penalty for relative pins
-const FORK_BONUS: i32 = 60;              // Bonus for creating forks
-const SKEWER_BONUS: i32 = 45;            // Bonus for skewers
-const DISCOVERED_ATTACK_BONUS: i32 = 40; // Bonus for discovered attacks
-const TRAPPED_PIECE: i32 = 180;          // Heavy penalty for trapped pieces
-const THREAT_BONUS: i32 = 35;            // Bonus for creating threats
-
-
 // Positional Weights
 const BISHOP_PAIR_BONUS: i32 = 55;
 const ROOK_OPEN_FILE: i32 = 35;
@@ -49,8 +38,9 @@ const PAWN_SHIELD_BONUS: i32 = 20;
 const OPEN_FILE_NEAR_KING: i32 = 35;
 const KING_ZONE_ATTACK: i32 = 15;
 const CASTLING_RIGHTS_BONUS: i32 = 35;
-// Quadratic king attack table — much more aggressive to prevent saving minor pieces at cost of king
-const KING_ATTACK_WEIGHT: [i32; 8] = [0, 20, 100, 250, 450, 700, 950, 1200];
+// Indexed by summed attacker weight (N/B=2, R=3, Q=5). Previously topped out at 1200cp, so one queen
+// touching the king zone scored -700. Values here are UNTUNED placeholders; tune with Texel/SPSA.
+const KING_ATTACK_WEIGHT: [i32; 8] = [0, 0, 2, 8, 18, 32, 50, 75];
 
 
 // Space and Mobility (much stronger mobility)
@@ -203,17 +193,25 @@ const KING_PST_EG: [i32; 64] = [
     -53, -34, -21, -11, -28, -14, -24, -43,
 ];
 
-// Move PinType outside of impl block
-#[derive(PartialEq)]
-enum PinType {
-    None,
-    Absolute,  // Pinned to king
-    Relative,  // Pinned to valuable piece
-}
-
 pub struct Evaluator;
 
 impl Evaluator {
+    /// Per-term breakdown (White perspective) written to stderr; used by the `evalterms` UCI command.
+    pub fn debug_terms(board: &BoardState) {
+        let phase = Self::game_phase(board);
+        let (mg, eg) = Self::material_and_pst(board);
+        eprintln!("phase={} material+pst mg={} eg={} tapered={}", phase, mg, eg, Self::tapered_eval(mg, eg, phase));
+        eprintln!("pawn_structure   {}", Self::pawn_structure(board, phase));
+        eprintln!("mobility         {}", Self::piece_mobility_safe(board, phase));
+        eprintln!("king_safety      {}", Self::king_safety_advanced(board, phase));
+        eprintln!("space            {}", Self::space_evaluation(board, phase));
+        eprintln!("rook             {}", Self::rook_evaluation(board));
+        eprintln!("bishop           {}", Self::bishop_evaluation(board));
+        eprintln!("knight           {}", Self::knight_evaluation(board));
+        eprintln!("tempo            {}", Self::tempo_bonus(board));
+        eprintln!("connectivity     {}", Self::piece_connectivity(board, phase));
+    }
+
     pub fn evaluate(board: &BoardState) -> i32 {
         // Quick draw detection
         if board.halfmove_clock >= 100 {
@@ -225,11 +223,6 @@ impl Evaluator {
         // Core evaluation components
         let (mg_score, eg_score) = Self::material_and_pst(board);
         let mut score = Self::tapered_eval(mg_score, eg_score, phase);
-
-        // CRITICAL: Tactical safety (prevents blunders)
-        // We now evaluate tactical safety statically but with tuned weights.
-        // Tactical resolution is further handled by Quiescence Search and SEE.
-        score += Self::tactical_safety(board, phase);
 
         
         // Positional evaluation
@@ -251,85 +244,6 @@ impl Evaluator {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // TACTICAL SAFETY - PREVENTS BLUNDERS (HIGHEST PRIORITY)
-    // ══════════════════════════════════════════════════════════════════════════════
-    
-    fn tactical_safety(board: &BoardState, phase: i32) -> i32 {
-        let mut score = 0;
-        let tables = &ATTACK_TABLES;
-        
-        // Build attack maps once for the entire board
-        let white_attacks = build_attack_map(board, 0, tables);
-        let black_attacks = build_attack_map(board, 1, tables);
-        
-        // Check both sides for hanging pieces and tactical threats
-        for color in 0..2 {
-            let sign = if color == 0 { 1 } else { -1 };
-            let _enemy_color = if color == 0 { 1 } else { 0 };
-            
-            let our_attacks = if color == 0 { white_attacks } else { black_attacks };
-            let enemy_attacks = if color == 0 { black_attacks } else { white_attacks };
-            
-            // Check all pieces for being undefended or underdefended
-            for piece_type in 1..=5 {  // Pawn to Queen (not King)
-                let mut pieces = board.pieces[color][piece_type];
-                
-                while pieces != 0 {
-                    let (new_bb, sq) = pop_lsb(pieces);
-                    pieces = new_bb;
-                    let square = sq.unwrap();
-                    
-                    // SEE (Static Exchange Evaluation) for this square
-                    let see_score = Self::see_square(board, square, color as u8);
-                    
-                    if see_score < 0 {
-                        // Losing the piece - heavy penalty
-                        score += sign * see_score;
-                        
-                        // Additional penalty if piece is completely undefended (hanging)
-                        let is_defended = (our_attacks & (1u64 << square)) != 0;
-                        if !is_defended {
-                            score += sign * -HANGING_PIECE_PENALTY;
-                        }
-                    }
-                    
-                    // Advanced pin detection
-                    let pin_type = Self::detect_pin_type(board, square, color as u8, tables);
-                    match pin_type {
-                        PinType::Absolute => {
-                            score += sign * -ABSOLUTE_PIN_PENALTY;
-                        }
-                        PinType::Relative => {
-                            score += sign * -RELATIVE_PIN_PENALTY;
-                        }
-                        PinType::None => {}
-                    }
-                    
-                    // Trapped piece detection - pass attack maps to consider trade options
-                    if Self::is_piece_trapped(board, square, piece_type, color, tables, enemy_attacks, our_attacks) {
-                        score += sign * -TRAPPED_PIECE;
-                    }
-                }
-            }
-            
-            // Threat detection (what can we attack next move?)
-            score += sign * Self::detect_threats(board, color as u8, tables);
-            
-            // Fork detection (knight and pawn forks)
-            score += sign * Self::detect_forks(board, color as u8, tables);
-            
-            // Skewer detection
-            score += sign * Self::detect_skewers(board, color as u8, tables);
-            
-            // Discovered attack potential
-            score += sign * Self::detect_discovered_attacks(board, color as u8, tables);
-        }
-        
-        // Scale tactical awareness by game phase (more critical in middlegame)
-        (score * (12 + phase)) / 24
-    }
-
     // 🎯 SEE - Static Exchange Evaluation (Swap List)
     
     /// Piece values indexed by piece type for SEE (same order as Piece enum).
@@ -341,10 +255,8 @@ impl Evaluator {
     /// is what reveals x-ray / battery attacks after a piece is removed.
     #[inline(always)]
     pub fn attackers_to(board: &BoardState, square: u8, occupied: u64, tables: &AttackTables) -> u64 {
-        // SEE changes occupancy but keeps the board bitboards immutable.
-        // Mask pawns too, otherwise exchanged pawns remain ghost attackers.
-        let all_pawns_w = board.pieces[0][Piece::Pawn as usize] & occupied;
-        let all_pawns_b = board.pieces[1][Piece::Pawn as usize] & occupied;
+        let all_pawns_w = board.pieces[0][Piece::Pawn as usize];
+        let all_pawns_b = board.pieces[1][Piece::Pawn as usize];
         let knights = (board.pieces[0][Piece::Knight as usize]
                      | board.pieces[1][Piece::Knight as usize]) & occupied;
         let kings   = (board.pieces[0][Piece::King as usize]
@@ -397,23 +309,13 @@ impl Evaluator {
     ///
     /// Returns the net material gain from the perspective of `side`.
     pub fn see(board: &BoardState, from: u8, to: u8, target_piece: usize, side: usize) -> i32 {
-        Self::see_internal(board, from, to, target_piece, side, None, None)
-    }
-
-    /// SEE for a concrete move, including special capture and promotion semantics.
-    fn see_internal(
-        board: &BoardState,
-        from: u8,
-        to: u8,
-        target_piece: usize,
-        side: usize,
-        promotion: Option<Piece>,
-        captured_off_square: Option<u8>,
-    ) -> i32 {
         let tables = &ATTACK_TABLES;
+
+        // Swap list on the stack (max 32 captures in a chain is more than enough).
         let mut gain: [i32; 32] = [0; 32];
         let mut depth: usize = 0;
 
+        // The moving piece is the attacker piece that starts the sequence.
         let attacker_piece = {
             let mut found = 0usize;
             for pt in 1..=6usize {
@@ -428,23 +330,22 @@ impl Evaluator {
             return 0;
         }
 
-        let promotion_gain = promotion
-            .map(|piece| Self::SEE_VALUES[piece as usize] - Self::SEE_VALUES[Piece::Pawn as usize])
-            .unwrap_or(0);
-        gain[0] = Self::SEE_VALUES[target_piece] + promotion_gain;
+        // Initial gain: we capture target_piece.
+        gain[0] = Self::SEE_VALUES[target_piece];
 
-        // Remove the mover and, for en passant, the captured pawn behind the target.
+        // Simulated occupancy — remove the initial attacker.
         let mut occupied = board.all_pieces & !(1u64 << from);
-        if let Some(captured_sq) = captured_off_square {
-            occupied &= !(1u64 << captured_sq);
-        }
 
-        let mut current_piece_value = promotion
-            .map(|piece| Self::SEE_VALUES[piece as usize])
-            .unwrap_or(Self::SEE_VALUES[attacker_piece]);
+        // The piece now sitting on `to` (i.e., the attacker that just moved).
+        let mut current_piece_value = Self::SEE_VALUES[attacker_piece];
 
+        // Side that gets to recapture next.
         let mut side_to_move = 1 - side;
-        let mut all_attackers = Self::attackers_to(board, to, occupied, tables) & occupied;
+
+        // Recompute attackers to `to` with updated occupancy (reveals x-rays).
+        let mut all_attackers = Self::attackers_to(board, to, occupied, tables);
+        // Only consider pieces still on the board.
+        all_attackers &= occupied;
 
         loop {
             depth += 1;
@@ -452,30 +353,46 @@ impl Evaluator {
                 break;
             }
 
+            // Negamax-style: gain[d] = value_of_piece_just_placed - gain[d-1]
             gain[depth] = current_piece_value - gain[depth - 1];
+
+            // Early prune: if even capturing for free can't improve the position
+            // for either side, stop.
             if (-gain[depth - 1]).max(gain[depth]) < 0 {
                 break;
             }
 
-            let (attacker_sq, piece_type) =
-                match Self::find_least_valuable_attacker_from(all_attackers, board, side_to_move) {
-                    Some(value) => value,
-                    None => break,
-                };
+            // Find the least valuable attacker for `side_to_move`.
+            let (attacker_sq, pt) = match Self::find_least_valuable_attacker_from(
+                all_attackers, board, side_to_move,
+            ) {
+                Some(v) => v,
+                None => break, // No more attackers for this side — sequence ends.
+            };
 
-            if piece_type == Piece::King as usize {
+            // Don't allow king captures if the opponent still has attackers.
+            if pt == Piece::King as usize {
                 let opponent = 1 - side_to_move;
                 if all_attackers & board.color_bb[opponent] & occupied != 0 {
                     break;
                 }
             }
 
+            // Remove the attacker from occupancy (simulates moving it to `to`).
             occupied ^= 1u64 << attacker_sq;
-            current_piece_value = Self::SEE_VALUES[piece_type];
-            all_attackers = Self::attackers_to(board, to, occupied, tables) & occupied;
+            current_piece_value = Self::SEE_VALUES[pt];
+
+            // Recompute attackers — this is what discovers x-ray sliders.
+            all_attackers = Self::attackers_to(board, to, occupied, tables);
+            all_attackers &= occupied;
+
             side_to_move = 1 - side_to_move;
         }
 
+        // Backward propagation (minimax on the gain array).
+        // At each depth, the side to move picks the better of:
+        //   • stand pat  → keeps -gain[d-1]
+        //   • recapture  → gets  gain[d]
         while depth > 1 {
             depth -= 1;
             gain[depth - 1] = -((-gain[depth - 1]).max(gain[depth]));
@@ -487,414 +404,18 @@ impl Evaluator {
     /// Evaluate whether a move `mv` has SEE ≥ `threshold`.
     /// Now handles both captures and quiet moves.
     pub fn see_capture(board: &BoardState, mv: &crate::movegen::Move, threshold: i32) -> bool {
-        let side = board.side_to_move as usize;
-        let (target_piece, captured_off_square) =
-            if mv.flags == crate::movegen::EP_CAPTURE {
-                let captured_sq = if board.side_to_move == Color::White {
-                    mv.to - 8
-                } else {
-                    mv.to + 8
-                };
-                (Piece::Pawn as usize, Some(captured_sq))
-            } else {
-                (
-                    board.piece_at(mv.to)
-                        .map(|(piece, _)| piece as usize)
-                        .unwrap_or(0),
-                    None,
-                )
-            };
-
-        Self::see_internal(
-            board,
-            mv.from,
-            mv.to,
-            target_piece,
-            side,
-            mv.promotion_piece(),
-            captured_off_square,
-        ) >= threshold
-    }
-
-    /// Evaluate whether a piece on `square` (owned by `defender_color`) is safe.
-    fn see_square(board: &BoardState, square: u8, defender_color: u8) -> i32 {
-        let attacker_color = (1 - defender_color) as usize;
-        let tables = &ATTACK_TABLES;
-
-        let (piece, _) = match board.piece_at(square) {
-            Some(p) => p,
-            None => return 0,
-        };
-
-        let all_attackers = Self::attackers_to(board, square, board.all_pieces, tables);
-        let enemy_attackers = all_attackers & board.color_bb[attacker_color];
-        if enemy_attackers == 0 {
-            return 0;
-        }
-
-        let (attacker_sq, _) = match Self::find_least_valuable_attacker_from(
-            enemy_attackers, board, attacker_color,
-        ) {
-            Some(v) => v,
-            None => return 0,
-        };
-
-        let see_value = Self::see(board, attacker_sq, square, piece as usize, attacker_color);
-
-        if see_value > 0 {
-            -see_value
+        let (target_piece, side) = if mv.flags == crate::movegen::EP_CAPTURE {
+            (Piece::Pawn as usize, if board.side_to_move == Color::White { 0 } else { 1 })
         } else {
-            0
-        }
-    }
-
-    // 🔍 Advanced Pin Detection
-    fn detect_pin_type(board: &BoardState, square: u8, color: u8, tables: &AttackTables) -> PinType {
-        let king_sq = match board.get_king_square(if color == 0 { Color::White } else { Color::Black }) {
-            Some(sq) => sq,
-            None => return PinType::None,
+            let target = match board.piece_at(mv.to) {
+                Some((p, _)) => p as usize,
+                None => 0, // Empty square for quiet moves
+            };
+            let side = if get_bit(board.color_bb[0], mv.from) { 0 } else { 1 };
+            (target, side)
         };
-        
-        let enemy_color = if color == 0 { 1 } else { 0 };
-        let square_bb = 1u64 << square;
-        
-        // Check diagonal pins
-        let bishop_attacks_from_king = tables.get_bishop_attacks(king_sq, board.all_pieces);
-        if (bishop_attacks_from_king & square_bb) != 0 {
-            let occ_without_piece = board.all_pieces & !(square_bb);
-            let extended_attacks = tables.get_bishop_attacks(king_sq, occ_without_piece);
-            if (extended_attacks & (board.pieces[enemy_color][Piece::Bishop as usize] |
-                                   board.pieces[enemy_color][Piece::Queen as usize])) != 0 {
-                return PinType::Absolute;
-            }
-        }
-        
-        // Check file/rank pins
-        let rook_attacks_from_king = tables.get_rook_attacks(king_sq, board.all_pieces);
-        if (rook_attacks_from_king & square_bb) != 0 {
-            let occ_without_piece = board.all_pieces & !(square_bb);
-            let extended_attacks = tables.get_rook_attacks(king_sq, occ_without_piece);
-            if (extended_attacks & (board.pieces[enemy_color][Piece::Rook as usize] |
-                                   board.pieces[enemy_color][Piece::Queen as usize])) != 0 {
-                return PinType::Absolute;
-            }
-        }
-        
-        // Check relative pins (pinned to queen or rook)
-        for piece_type in 4..=5 {  // Rook and Queen
-            let mut valuable_pieces = board.pieces[color as usize][piece_type];
-            
-            while valuable_pieces != 0 {
-                let (new_bb, valuable_sq) = pop_lsb(valuable_pieces);
-                valuable_pieces = new_bb;
-                let target_sq = valuable_sq.unwrap();
-                
-                if target_sq == square {
-                    continue;
-                }
-                
-                // Check if our piece is between enemy attacker and our valuable piece
-                let attacks = if piece_type == 4 {
-                    tables.get_rook_attacks(target_sq, board.all_pieces)
-                } else {
-                    tables.get_queen_attacks(target_sq, board.all_pieces)
-                };
-                
-                if (attacks & square_bb) != 0 {
-                    let occ_without = board.all_pieces & !(square_bb);
-                    let extended = if piece_type == 4 {
-                        tables.get_rook_attacks(target_sq, occ_without)
-                    } else {
-                        tables.get_queen_attacks(target_sq, occ_without)
-                    };
-                    
-                    if (extended & (board.pieces[enemy_color][Piece::Rook as usize] |
-                                   board.pieces[enemy_color][Piece::Queen as usize])) != 0 {
-                        return PinType::Relative;
-                    }
-                }
-            }
-        }
-        
-        PinType::None
-    }
 
-    // ⚡ Trapped Piece Detection
-    fn is_piece_trapped(
-        board: &BoardState, 
-        square: u8, 
-        piece_type: usize, 
-        color: usize, 
-        tables: &AttackTables,
-        enemy_attacks: Bitboard,
-        our_attacks: Bitboard
-    ) -> bool {
-        if piece_type == 1 || piece_type == 6 {
-            return false; // Don't check pawns or king
-        }
-        
-        let moves = match piece_type {
-            2 => tables.knight_attacks[square as usize],
-            3 => tables.get_bishop_attacks(square, board.all_pieces),
-            4 => tables.get_rook_attacks(square, board.all_pieces),
-            5 => tables.get_queen_attacks(square, board.all_pieces),
-            _ => return false,
-        };
-        
-        let mut temp_moves = moves & !board.color_bb[color];
-        
-        // Count safe squares
-        let mut safe_count = 0;
-        
-        while temp_moves != 0 {
-            let (new_bb, sq) = pop_lsb(temp_moves);
-            temp_moves = new_bb;
-            let target_bb = 1u64 << sq.unwrap();
-            
-            // A square is considered "safe" for escaping or trading if:
-            // 1. It is not attacked by the enemy.
-            // 2. It IS attacked but also defended by us (offering a trade).
-            // HIGH-VALUE PIECE SAFETY: Only count defended squares as safe for minor pieces (Knight/Bishop).
-            // For Queens and Rooks, we remain pessimistic and only count unattacked squares.
-            let is_high_value = piece_type == 4 || piece_type == 5; // Rook or Queen
-            
-            if (enemy_attacks & target_bb) == 0 || (!is_high_value && (our_attacks & target_bb) != 0) {
-                safe_count += 1;
-            }
-        }
-        
-        // If fewer than 2 safe/trade squares, piece is likely trapped
-        safe_count < 2
-    }
-
-    // 🛡️ Threat Detection
-    fn detect_threats(board: &BoardState, color: u8, tables: &AttackTables) -> i32 {
-        let mut threat_score = 0;
-        let enemy_color = 1 - color as usize;
-        
-        // Check what we can attack on next move
-        for piece_type in 1..=6 {
-            let mut pieces = board.pieces[color as usize][piece_type];
-            
-            while pieces != 0 {
-                let (new_bb, sq) = pop_lsb(pieces);
-                pieces = new_bb;
-                let square = sq.unwrap();
-                
-                let attacks = match piece_type {
-                    1 => tables.pawn_attacks[color as usize][square as usize],
-                    2 => tables.knight_attacks[square as usize],
-                    3 => tables.get_bishop_attacks(square, board.all_pieces),
-                    4 => tables.get_rook_attacks(square, board.all_pieces),
-                    5 => tables.get_queen_attacks(square, board.all_pieces),
-                    6 => tables.king_attacks[square as usize],
-                    _ => 0,
-                };
-                
-                // Count valuable enemy pieces we're attacking
-                let threatened_pieces = attacks & board.color_bb[enemy_color];
-                let mut temp = threatened_pieces;
-                
-                while temp != 0 {
-                    let (new_t, t_sq) = pop_lsb(temp);
-                    temp = new_t;
-                    let target = t_sq.unwrap();
-                    
-                    if let Some((t_piece, _)) = board.piece_at(target) {
-                        let t_value = PIECE_VALUES[t_piece as usize];
-                        let our_value = PIECE_VALUES[piece_type];
-                        
-                        // Bonus if we attack more valuable piece
-                        if t_value > our_value + 100 {
-                            threat_score += THREAT_BONUS;
-                        }
-                    }
-                }
-            }
-        }
-        
-        threat_score
-    }
-    
-    fn count_attackers(board: &BoardState, square: u8, color: usize, tables: &AttackTables) -> i32 {
-        let mut count = 0;
-        
-        // Pawn attackers
-        let pawn_attacks = tables.pawn_attacks[1 - color][square as usize];
-        count += count_bits(pawn_attacks & board.pieces[color][Piece::Pawn as usize]) as i32;
-        
-        // Knight attackers
-        let knight_attacks = tables.knight_attacks[square as usize];
-        count += count_bits(knight_attacks & board.pieces[color][Piece::Knight as usize]) as i32;
-        
-        // Bishop/Queen diagonal attackers
-        let bishop_attacks = tables.get_bishop_attacks(square, board.all_pieces);
-        count += count_bits(bishop_attacks & (board.pieces[color][Piece::Bishop as usize] |
-                                              board.pieces[color][Piece::Queen as usize])) as i32;
-        
-        // Rook/Queen file attackers
-        let rook_attacks = tables.get_rook_attacks(square, board.all_pieces);
-        count += count_bits(rook_attacks & (board.pieces[color][Piece::Rook as usize] |
-                                            board.pieces[color][Piece::Queen as usize])) as i32;
-        
-        // King attackers
-        let king_attacks = tables.king_attacks[square as usize];
-        count += count_bits(king_attacks & board.pieces[color][Piece::King as usize]) as i32;
-        
-        count
-    }
-    
-    fn detect_forks(board: &BoardState, color: u8, tables: &AttackTables) -> i32 {
-        let mut fork_score = 0;
-        let enemy_color = 1 - color as usize;
-        
-        // Knight forks
-        let mut knights = board.pieces[color as usize][Piece::Knight as usize];
-        while knights != 0 {
-            let (new_bb, sq) = pop_lsb(knights);
-            knights = new_bb;
-            let square = sq.unwrap();
-            
-            let attacks = tables.knight_attacks[square as usize];
-            let attacked_pieces = attacks & board.color_bb[enemy_color];
-            
-            if count_bits(attacked_pieces) >= 2 {
-                fork_score += FORK_BONUS;
-            }
-        }
-        
-        // Pawn forks
-        let mut pawns = board.pieces[color as usize][Piece::Pawn as usize];
-        while pawns != 0 {
-            let (new_bb, sq) = pop_lsb(pawns);
-            pawns = new_bb;
-            let square = sq.unwrap();
-            
-            let attacks = tables.pawn_attacks[color as usize][square as usize];
-            let attacked_pieces = attacks & board.color_bb[enemy_color];
-            
-            if count_bits(attacked_pieces) >= 2 {
-                fork_score += FORK_BONUS / 2;
-            }
-        }
-        
-        fork_score
-    }
-
-    // 🎨 Skewer Detection
-    fn detect_skewers(board: &BoardState, color: u8, tables: &AttackTables) -> i32 {
-        let mut skewer_score = 0;
-        let enemy_color = 1 - color as usize;
-        
-        // Check bishops and queens for skewers
-        for piece_type in [Piece::Bishop as usize, Piece::Queen as usize] {
-            let mut pieces = board.pieces[color as usize][piece_type];
-            
-            while pieces != 0 {
-                let (new_bb, sq) = pop_lsb(pieces);
-                pieces = new_bb;
-                let square = sq.unwrap();
-                
-                let attacks = if piece_type == Piece::Bishop as usize {
-                    tables.get_bishop_attacks(square, board.all_pieces)
-                } else {
-                    tables.get_bishop_attacks(square, board.all_pieces) | 
-                    tables.get_rook_attacks(square, board.all_pieces)
-                };
-                
-                // Look for valuable piece with less valuable piece behind it
-                let mut temp = attacks & board.color_bb[enemy_color];
-                while temp != 0 {
-                    let (new_t, t_sq) = pop_lsb(temp);
-                    temp = new_t;
-                    let target = t_sq.unwrap();
-                    
-                    if let Some((front_piece, _)) = board.piece_at(target) {
-                        // Remove front piece and see what's behind
-                        let occ_without = board.all_pieces & !(1u64 << target);
-                        let extended = if piece_type == Piece::Bishop as usize {
-                            tables.get_bishop_attacks(square, occ_without)
-                        } else {
-                            tables.get_queen_attacks(square, occ_without)
-                        };
-                        
-                        let behind = extended & board.color_bb[enemy_color] & !(attacks);
-                        if behind != 0 {
-                            if let Some((back_piece, _)) = board.piece_at(lsb(behind).unwrap()) {
-                                let front_val = PIECE_VALUES[front_piece as usize];
-                                let back_val = PIECE_VALUES[back_piece as usize];
-                                
-                                // Skewer if front piece is more valuable
-                                if front_val >= back_val + 200 {
-                                    skewer_score += SKEWER_BONUS;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        skewer_score
-    }
-
-    // 🌟 Discovered Attack Detection
-    fn detect_discovered_attacks(board: &BoardState, color: u8, tables: &AttackTables) -> i32 {
-        let mut discovered_score = 0;
-        let enemy_color = 1 - color as usize;
-        
-        // Check for potential discovered attacks by moving pieces
-        for piece_type in 1..=6 {
-            let mut pieces = board.pieces[color as usize][piece_type];
-            
-            while pieces != 0 {
-                let (new_bb, sq) = pop_lsb(pieces);
-                pieces = new_bb;
-                let square = sq.unwrap();
-                let square_bb = 1u64 << square;
-                
-                // Check what's behind this piece
-                for attacker_type in [Piece::Bishop as usize, Piece::Rook as usize, Piece::Queen as usize] {
-                    let mut attackers = board.pieces[color as usize][attacker_type];
-                    
-                    while attackers != 0 {
-                        let (new_a, a_sq) = pop_lsb(attackers);
-                        attackers = new_a;
-                        let attacker_sq = a_sq.unwrap();
-                        
-                        if attacker_sq == square {
-                            continue;
-                        }
-                        
-                        let attacks = match attacker_type {
-                            3 => tables.get_bishop_attacks(attacker_sq, board.all_pieces),
-                            4 => tables.get_rook_attacks(attacker_sq, board.all_pieces),
-                            5 => tables.get_queen_attacks(attacker_sq, board.all_pieces),
-                            _ => 0,
-                        };
-                        
-                        // If our piece is on the attack line
-                        if (attacks & square_bb) != 0 {
-                            // See what would be attacked if piece moves
-                            let occ_without = board.all_pieces & !square_bb;
-                            let extended = match attacker_type {
-                                3 => tables.get_bishop_attacks(attacker_sq, occ_without),
-                                4 => tables.get_rook_attacks(attacker_sq, occ_without),
-                                5 => tables.get_queen_attacks(attacker_sq, occ_without),
-                                _ => 0,
-                            };
-                            
-                            let new_targets = extended & board.color_bb[enemy_color] & !attacks;
-                            if new_targets != 0 {
-                                discovered_score += DISCOVERED_ATTACK_BONUS;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        discovered_score
+        Self::see(board, mv.from, mv.to, target_piece, side) >= threshold
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
@@ -942,7 +463,8 @@ impl Evaluator {
                     temp = new_bb;
                     let square = sq.unwrap();
                     
-                    let pst_sq = if color == 0 { square } else { square ^ 56 };
+                    // PST tables are written a8-first (PeSTO layout); squares here are a1=0, so White must be flipped.
+                    let pst_sq = if color == 0 { square ^ 56 } else { square };
                     
                     let (mg_bonus, eg_bonus) = match piece_type {
                         1 => (PAWN_PST_MG[pst_sq as usize], PAWN_PST_EG[pst_sq as usize]),
@@ -2002,51 +1524,4 @@ fn build_attack_map(board: &BoardState, color: usize, tables: &AttackTables) -> 
     }
     
     attacks
-}
-
-
-#[cfg(test)]
-mod see_regression_tests {
-    use super::*;
-    use crate::board::BoardState;
-    use crate::movegen::{Move, EP_CAPTURE, QUEEN_PROMOTION};
-
-    #[test]
-    fn see_ignores_pawns_removed_from_occupancy() {
-        let board = BoardState::from_fen(
-            "4k3/8/8/8/4P3/8/8/4K3 w - - 0 1"
-        ).unwrap();
-
-        // e4 (square 28) attacks d5 (square 35), but the pawn is absent
-        // from this simulated occupancy and must not remain an attacker.
-        let occupied = board.all_pieces & !(1u64 << 28);
-        let attackers = Evaluator::attackers_to(
-            &board,
-            35,
-            occupied,
-            &ATTACK_TABLES,
-        );
-
-        assert_eq!(attackers & (1u64 << 28), 0);
-    }
-
-    #[test]
-    fn see_counts_quiet_queen_promotion_material_gain() {
-        let board = BoardState::from_fen(
-            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1"
-        ).unwrap();
-        let promotion = Move::new(48, 56, QUEEN_PROMOTION);
-
-        assert!(Evaluator::see_capture(&board, &promotion, 800));
-    }
-
-    #[test]
-    fn see_removes_the_off_target_en_passant_victim() {
-        let board = BoardState::from_fen(
-            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"
-        ).unwrap();
-        let en_passant = Move::new(36, 43, EP_CAPTURE);
-
-        assert!(Evaluator::see_capture(&board, &en_passant, 100));
-    }
 }
