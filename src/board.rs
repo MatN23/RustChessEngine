@@ -545,3 +545,22 @@ pub fn square_name(sq: u8) -> String {
     let rank = (b'1' + (sq / 8)) as char;
     format!("{}{}", file, rank)
 }
+
+
+#[cfg(test)]
+mod repetition_regression_tests {
+    use super::*;
+
+    #[test]
+    fn repetition_requires_three_occurrences() {
+        let mut board = BoardState::default();
+        board.position_history.clear();
+        board.position_history.push(board.hash);
+        board.position_history.push(board.hash);
+
+        assert!(!board.is_repetition());
+
+        board.position_history.push(board.hash);
+        assert!(board.is_repetition());
+    }
+}
