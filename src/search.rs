@@ -855,7 +855,10 @@ impl SearchEngine {
                 return beta;
             }
 
-            if stand_pat + 800 < alpha {
+            // A single queen capture is worth 900 cp, and a capture-promotion
+            // can gain substantially more. Keep the delta margin above those
+            // tactical gains so a losing static evaluation cannot prune them.
+            if stand_pat + 1800 < alpha {
                 return alpha;
             }
 
