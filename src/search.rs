@@ -332,18 +332,18 @@ impl SearchEngine {
                 .into_par_iter()
                 .map(|thread_id| {
                     if self.stop.load(Ordering::Relaxed) {
-                        return (-INFINITY, None, MoveList::new());
+                        return (thread_id, -INFINITY, None, MoveList::new());
                     }
 
                     let depth_variation = if thread_id > 0 {
-                        // Vary depth for helper threads
+                        // Helpers use a slightly shallower search to contribute TT entries.
                         let offset = (thread_id as i32) % 4 - 1;
                         (depth as i32 + offset).max(1).min(depth as i32) as u8
                     } else {
                         depth
                     };
 
-                    self.search_root_thread(
+                    let (score, mv, pv) = self.search_root_thread(
                         board,
                         depth_variation,
                         alpha,
@@ -352,16 +352,21 @@ impl SearchEngine {
                         start_time,
                         soft_limit,
                         hard_limit,
-                    )
+                    );
+
+                    (thread_id, score, mv, pv)
                 })
                 .collect();
 
-            // Select best result
-            for (score, mv, pv) in results {
-                if score > best_score {
+            // Root scores from different depths are not comparable. Only the
+            // full-depth main thread may choose the move; helpers contribute
+            // shared transposition-table information.
+            for (thread_id, score, mv, pv) in results {
+                if thread_id == 0 {
                     best_score = score;
                     best_move = mv;
                     best_pv = pv;
+                    break;
                 }
             }
         } else {
