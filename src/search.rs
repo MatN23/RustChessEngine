@@ -80,6 +80,64 @@ impl ThreadData {
     }
 }
 
+
+fn is_passed_pawn_push(board: &BoardState, mv: &Move) -> bool {
+    if mv.is_capture() || mv.is_promotion() || mv.from >= 64 || mv.to >= 64 {
+        return false;
+    }
+
+    let (own_color, enemy_color, from_rank, to_rank, forward) =
+        match board.side_to_move {
+            Color::White => (0usize, 1usize, 5u8, 6u8, 8i16),
+            Color::Black => (1usize, 0usize, 2u8, 1u8, -8i16),
+        };
+
+    if board.pieces[own_color][1] & (1u64 << mv.from) == 0
+        || mv.from / 8 != from_rank
+        || mv.to / 8 != to_rank
+        || mv.to as i16 - mv.from as i16 != forward
+    {
+        return false;
+    }
+
+    let file = mv.from % 8;
+    let mut enemy_pawns_ahead = 0u64;
+    if board.side_to_move == Color::White {
+        for rank in (from_rank + 1)..8 {
+            for adjacent_file in file.saturating_sub(1)..=(file + 1).min(7) {
+                enemy_pawns_ahead |= 1u64 << (rank * 8 + adjacent_file);
+            }
+        }
+    } else {
+        for rank in 0..from_rank {
+            for adjacent_file in file.saturating_sub(1)..=(file + 1).min(7) {
+                enemy_pawns_ahead |= 1u64 << (rank * 8 + adjacent_file);
+            }
+        }
+    }
+
+    board.pieces[enemy_color][1] & enemy_pawns_ahead == 0
+}
+
+/// Captures and promotions are always included. Quiet checks are included only
+/// for the first two quiescence plies to catch forcing replies without allowing
+/// an unbounded checking-move explosion.
+fn generate_quiescence_moves(board: &BoardState, depth: i8, in_check: bool) -> MoveList {
+    let mut moves = MoveList::new();
+    for mv in MoveGenerator::generate_legal_moves(board) {
+        if in_check || mv.is_capture() || mv.is_promotion() {
+            moves.push(mv);
+        } else if depth >= -1 {
+            let mut child = board.clone();
+            child.make_move(&mv);
+            if child.is_in_check(child.side_to_move) {
+                moves.push(mv);
+            }
+        }
+    }
+    moves
+}
+
 impl SearchEngine {
     pub fn new(threads: usize) -> Self {
         let threads = threads.clamp(1, MAX_THREADS);
@@ -584,9 +642,13 @@ impl SearchEngine {
         }
 
         let static_eval = Evaluator::evaluate(board);
+        let tactical_danger = !pv_node
+            && !in_check
+            && depth <= 7
+            && Evaluator::has_unprotected_attacked_piece(board, board.side_to_move);
 
         // Reverse futility pruning
-        if !pv_node && !in_check && depth <= 7 {
+        if !pv_node && !in_check && !tactical_danger && depth <= 7 {
             let rfp_margin = 90 * depth as i32;
             if static_eval - rfp_margin >= beta_new {
                 return static_eval - rfp_margin;
@@ -594,7 +656,7 @@ impl SearchEngine {
         }
 
         // Null move pruning with verification
-        if !pv_node && !in_check && depth >= 3 && board.halfmove_clock < 90 {
+        if !pv_node && !in_check && !tactical_danger && depth >= 3 && board.halfmove_clock < 90 {
             let has_pieces = (board.pieces[board.side_to_move as usize][2] 
                 | board.pieces[board.side_to_move as usize][3]
                 | board.pieces[board.side_to_move as usize][4]
@@ -623,7 +685,7 @@ impl SearchEngine {
         }
 
         // Razoring
-        if depth <= 3 && !in_check && !pv_node {
+        if depth <= 3 && !in_check && !pv_node && !tactical_danger {
             let razor_margin = 350 + 200 * depth as i32;
             if static_eval + razor_margin < alpha {
                 let q_score = self.quiescence(board, alpha, beta_new, 0, thread_data, start_time, hard_limit);
@@ -667,7 +729,7 @@ impl SearchEngine {
             }
 
             // Late Move Pruning (LMP) for quiet moves in non-PV nodes
-            if !pv_node && !in_check && depth <= 3 && move_count > (3 + 2 * depth as usize) && !mv.is_capture() && !mv.is_promotion() {
+            if !pv_node && !in_check && !tactical_danger && depth <= 3 && move_count > (3 + 2 * depth as usize) && !mv.is_capture() && !mv.is_promotion() {
                 let h = thread_data.history_table[mv.from as usize][mv.to as usize];
                 if h < 2000 {
                     move_count += 1;
@@ -676,7 +738,7 @@ impl SearchEngine {
             }
 
             // History pruning: skip quiet moves with very bad history at shallow depths
-            if !pv_node && !in_check && depth <= 5 && move_count > 3 && !mv.is_capture() && !mv.is_promotion() {
+            if !pv_node && !in_check && !tactical_danger && depth <= 5 && move_count > 3 && !mv.is_capture() && !mv.is_promotion() {
                 let h = thread_data.history_table[mv.from as usize][mv.to as usize];
                 if h < -(depth as i32 * depth as i32 * 100) {
                     move_count += 1;
@@ -691,6 +753,7 @@ impl SearchEngine {
             // version also pruned PV nodes and used a margin up to 720 cp.
             let futile = !pv_node
                 && !in_check
+                && !tactical_danger
                 && !new_board.is_in_check(new_board.side_to_move)
                 && !mv.is_capture()
                 && !mv.is_promotion()
@@ -708,17 +771,9 @@ impl SearchEngine {
             let gives_check = new_board.is_in_check(new_board.side_to_move);
             let mut extension = 0;
 
-            // Passed pawn extension
-            if !gives_check && mv.from / 8 == 6 && board.side_to_move == Color::White && !mv.is_capture() {
-                let pawn_bb = board.pieces[0][1];
-                if (pawn_bb & (1u64 << mv.from)) != 0 {
-                    extension = 1;
-                }
-            } else if !gives_check && mv.from / 8 == 1 && board.side_to_move == Color::Black && !mv.is_capture() {
-                let pawn_bb = board.pieces[1][1];
-                if (pawn_bb & (1u64 << mv.from)) != 0 {
-                    extension = 1;
-                }
+            // Extend only a genuine passer advancing onto the seventh rank.
+            if !gives_check && is_passed_pawn_push(board, &mv) {
+                extension = 1;
             }
 
             let score = if move_count == 0 {
@@ -910,11 +965,7 @@ impl SearchEngine {
         }
 
         // Captures plus all promotions, including quiet promotions.
-        let mut moves = if in_check {
-            MoveGenerator::generate_legal_moves(board)
-        } else {
-            MoveGenerator::generate_captures(board)
-        };
+        let mut moves = generate_quiescence_moves(board, depth, in_check);
 
         if moves.is_empty() {
             if in_check {
@@ -934,7 +985,7 @@ impl SearchEngine {
         for mv in moves {
             // Promotion material gain is handled explicitly by SEE, but don't
             // prune promotions at the horizon on a static exchange threshold.
-            if !in_check && !mv.is_promotion() && !self.see_capture(board, &mv, 0) {
+            if !in_check && mv.is_capture() && !mv.is_promotion() && !self.see_capture(board, &mv, 0) {
                 continue;
             }
 
@@ -1525,5 +1576,31 @@ mod search_regression_tests {
         let result = engine.search(board, 0, None);
         assert_eq!(result.best_move, expected_move);
         assert_eq!(result.score, expected_score);
+    }
+
+    #[test]
+    fn passed_pawn_extension_requires_a_true_advanced_passer() {
+        let passer =
+            BoardState::from_fen("7k/8/P7/8/8/8/8/7K w - - 0 1").unwrap();
+        let challenged =
+            BoardState::from_fen("7k/1p6/P7/8/8/8/8/7K w - - 0 1").unwrap();
+        let opening = BoardState::default();
+
+        let push = Move::new(40, 48, 0); // a6-a7
+        assert!(is_passed_pawn_push(&passer, &push));
+        assert!(!is_passed_pawn_push(&challenged, &push));
+        assert!(!is_passed_pawn_push(&opening, &Move::new(8, 16, 0)));
+    }
+
+    #[test]
+    fn quiescence_includes_shallow_quiet_checks_but_bounds_them() {
+        let board =
+            BoardState::from_fen("4k3/8/8/8/2N5/8/8/4K3 w - - 0 1").unwrap();
+
+        let shallow = generate_quiescence_moves(&board, 0, false);
+        assert!(shallow.iter().any(|mv| mv.to_uci() == "c4d6"));
+
+        let deeper = generate_quiescence_moves(&board, -2, false);
+        assert!(!deeper.iter().any(|mv| mv.to_uci() == "c4d6"));
     }
 }
