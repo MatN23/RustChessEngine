@@ -1215,17 +1215,16 @@ impl TranspositionTable {
         // Replacement strategy
         let should_replace = if let Some(entry) = &self.table[index] {
             if entry.hash == hash {
-                // Always replace if same position
-                true
+                // Do not let a shallower helper search overwrite a deeper
+                // result for the same position. At equal depth, prefer exact
+                // information over a bound.
+                depth > entry.depth
+                    || (depth == entry.depth && flag == TT_EXACT && entry.flag != TT_EXACT)
             } else {
-                // Replace based on depth and age
+                // Replace based on depth and age.
                 let depth_diff = depth as i32 - entry.depth as i32;
                 let age_diff = self.current_age.wrapping_sub(entry.age);
-                
-                // Replace if:
-                // 1. Much deeper search
-                // 2. Old entry
-                // 3. Depth is similar and entry is old
+
                 depth_diff >= 3 || age_diff >= 4 || (depth_diff >= 0 && age_diff >= 2)
             }
         } else {
@@ -1314,12 +1313,27 @@ mod tests {
     fn test_transposition_table() {
         let mut tt = TranspositionTable::new(16);
         let test_move = Move::new(12, 20, 0);
-        
+
         tt.store(12345, 5, 100, TT_EXACT, Some(test_move));
-        
+
         let entry = tt.probe(12345);
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().score, 100);
+    }
+
+    #[test]
+    fn test_tt_does_not_replace_deeper_same_position_with_shallow_entry() {
+        let mut tt = TranspositionTable::new(16);
+        let deeper = Move::new(12, 20, 0);
+        let shallower = Move::new(11, 27, 0);
+
+        tt.store(12345, 8, 240, TT_EXACT, Some(deeper));
+        tt.store(12345, 5, -80, TT_BETA, Some(shallower));
+
+        let entry = tt.probe(12345).unwrap();
+        assert_eq!(entry.depth, 8);
+        assert_eq!(entry.score, 240);
+        assert_eq!(entry.best_move, Some(deeper));
     }
 
     #[test]
