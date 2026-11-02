@@ -1,0 +1,10 @@
+.DS_Store
+target/
+__pycache__/
+*.pyc
+*.so
+*.dylib
+*.whl
+*.tar.gz
+tmp/
+build_log.txt
