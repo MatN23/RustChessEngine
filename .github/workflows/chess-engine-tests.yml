@@ -1,0 +1,22 @@
+name: Chess engine tests
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check PyO3 library build
+        run: cargo check --lib
+      - name: Run engine unit tests
+        run: cargo test --no-default-features --bin chess_uci

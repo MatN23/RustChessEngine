@@ -270,7 +270,7 @@ impl BoardState {
     }
 
     pub fn is_repetition(&self) -> bool {
-        self.position_history.iter().filter(|&&h| h == self.hash).count() >= 2
+        self.position_history.iter().filter(|&&h| h == self.hash).count() >= 3
     }
 
     pub fn is_draw(&self) -> bool {
@@ -544,4 +544,23 @@ pub fn square_name(sq: u8) -> String {
     let file = (b'a' + (sq % 8)) as char;
     let rank = (b'1' + (sq / 8)) as char;
     format!("{}{}", file, rank)
+}
+
+
+#[cfg(test)]
+mod repetition_regression_tests {
+    use super::*;
+
+    #[test]
+    fn repetition_requires_three_occurrences() {
+        let mut board = BoardState::default();
+        board.position_history.clear();
+        board.position_history.push(board.hash);
+        board.position_history.push(board.hash);
+
+        assert!(!board.is_repetition());
+
+        board.position_history.push(board.hash);
+        assert!(board.is_repetition());
+    }
 }
