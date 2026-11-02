@@ -341,8 +341,10 @@ impl Evaluator {
     /// is what reveals x-ray / battery attacks after a piece is removed.
     #[inline(always)]
     pub fn attackers_to(board: &BoardState, square: u8, occupied: u64, tables: &AttackTables) -> u64 {
-        let all_pawns_w = board.pieces[0][Piece::Pawn as usize];
-        let all_pawns_b = board.pieces[1][Piece::Pawn as usize];
+        // SEE changes occupancy but keeps the board bitboards immutable.
+        // Mask pawns too, otherwise exchanged pawns remain ghost attackers.
+        let all_pawns_w = board.pieces[0][Piece::Pawn as usize] & occupied;
+        let all_pawns_b = board.pieces[1][Piece::Pawn as usize] & occupied;
         let knights = (board.pieces[0][Piece::Knight as usize]
                      | board.pieces[1][Piece::Knight as usize]) & occupied;
         let kings   = (board.pieces[0][Piece::King as usize]
@@ -395,13 +397,23 @@ impl Evaluator {
     ///
     /// Returns the net material gain from the perspective of `side`.
     pub fn see(board: &BoardState, from: u8, to: u8, target_piece: usize, side: usize) -> i32 {
-        let tables = &ATTACK_TABLES;
+        Self::see_internal(board, from, to, target_piece, side, None, None)
+    }
 
-        // Swap list on the stack (max 32 captures in a chain is more than enough).
+    /// SEE for a concrete move, including special capture and promotion semantics.
+    fn see_internal(
+        board: &BoardState,
+        from: u8,
+        to: u8,
+        target_piece: usize,
+        side: usize,
+        promotion: Option<Piece>,
+        captured_off_square: Option<u8>,
+    ) -> i32 {
+        let tables = &ATTACK_TABLES;
         let mut gain: [i32; 32] = [0; 32];
         let mut depth: usize = 0;
 
-        // The moving piece is the attacker piece that starts the sequence.
         let attacker_piece = {
             let mut found = 0usize;
             for pt in 1..=6usize {
@@ -416,22 +428,23 @@ impl Evaluator {
             return 0;
         }
 
-        // Initial gain: we capture target_piece.
-        gain[0] = Self::SEE_VALUES[target_piece];
+        let promotion_gain = promotion
+            .map(|piece| Self::SEE_VALUES[piece as usize] - Self::SEE_VALUES[Piece::Pawn as usize])
+            .unwrap_or(0);
+        gain[0] = Self::SEE_VALUES[target_piece] + promotion_gain;
 
-        // Simulated occupancy — remove the initial attacker.
+        // Remove the mover and, for en passant, the captured pawn behind the target.
         let mut occupied = board.all_pieces & !(1u64 << from);
+        if let Some(captured_sq) = captured_off_square {
+            occupied &= !(1u64 << captured_sq);
+        }
 
-        // The piece now sitting on `to` (i.e., the attacker that just moved).
-        let mut current_piece_value = Self::SEE_VALUES[attacker_piece];
+        let mut current_piece_value = promotion
+            .map(|piece| Self::SEE_VALUES[piece as usize])
+            .unwrap_or(Self::SEE_VALUES[attacker_piece]);
 
-        // Side that gets to recapture next.
         let mut side_to_move = 1 - side;
-
-        // Recompute attackers to `to` with updated occupancy (reveals x-rays).
-        let mut all_attackers = Self::attackers_to(board, to, occupied, tables);
-        // Only consider pieces still on the board.
-        all_attackers &= occupied;
+        let mut all_attackers = Self::attackers_to(board, to, occupied, tables) & occupied;
 
         loop {
             depth += 1;
@@ -439,46 +452,30 @@ impl Evaluator {
                 break;
             }
 
-            // Negamax-style: gain[d] = value_of_piece_just_placed - gain[d-1]
             gain[depth] = current_piece_value - gain[depth - 1];
-
-            // Early prune: if even capturing for free can't improve the position
-            // for either side, stop.
             if (-gain[depth - 1]).max(gain[depth]) < 0 {
                 break;
             }
 
-            // Find the least valuable attacker for `side_to_move`.
-            let (attacker_sq, pt) = match Self::find_least_valuable_attacker_from(
-                all_attackers, board, side_to_move,
-            ) {
-                Some(v) => v,
-                None => break, // No more attackers for this side — sequence ends.
-            };
+            let (attacker_sq, piece_type) =
+                match Self::find_least_valuable_attacker_from(all_attackers, board, side_to_move) {
+                    Some(value) => value,
+                    None => break,
+                };
 
-            // Don't allow king captures if the opponent still has attackers.
-            if pt == Piece::King as usize {
+            if piece_type == Piece::King as usize {
                 let opponent = 1 - side_to_move;
                 if all_attackers & board.color_bb[opponent] & occupied != 0 {
                     break;
                 }
             }
 
-            // Remove the attacker from occupancy (simulates moving it to `to`).
             occupied ^= 1u64 << attacker_sq;
-            current_piece_value = Self::SEE_VALUES[pt];
-
-            // Recompute attackers — this is what discovers x-ray sliders.
-            all_attackers = Self::attackers_to(board, to, occupied, tables);
-            all_attackers &= occupied;
-
+            current_piece_value = Self::SEE_VALUES[piece_type];
+            all_attackers = Self::attackers_to(board, to, occupied, tables) & occupied;
             side_to_move = 1 - side_to_move;
         }
 
-        // Backward propagation (minimax on the gain array).
-        // At each depth, the side to move picks the better of:
-        //   • stand pat  → keeps -gain[d-1]
-        //   • recapture  → gets  gain[d]
         while depth > 1 {
             depth -= 1;
             gain[depth - 1] = -((-gain[depth - 1]).max(gain[depth]));
@@ -490,18 +487,33 @@ impl Evaluator {
     /// Evaluate whether a move `mv` has SEE ≥ `threshold`.
     /// Now handles both captures and quiet moves.
     pub fn see_capture(board: &BoardState, mv: &crate::movegen::Move, threshold: i32) -> bool {
-        let (target_piece, side) = if mv.flags == crate::movegen::EP_CAPTURE {
-            (Piece::Pawn as usize, if board.side_to_move == Color::White { 0 } else { 1 })
-        } else {
-            let target = match board.piece_at(mv.to) {
-                Some((p, _)) => p as usize,
-                None => 0, // Empty square for quiet moves
+        let side = board.side_to_move as usize;
+        let (target_piece, captured_off_square) =
+            if mv.flags == crate::movegen::EP_CAPTURE {
+                let captured_sq = if board.side_to_move == Color::White {
+                    mv.to - 8
+                } else {
+                    mv.to + 8
+                };
+                (Piece::Pawn as usize, Some(captured_sq))
+            } else {
+                (
+                    board.piece_at(mv.to)
+                        .map(|(piece, _)| piece as usize)
+                        .unwrap_or(0),
+                    None,
+                )
             };
-            let side = if get_bit(board.color_bb[0], mv.from) { 0 } else { 1 };
-            (target, side)
-        };
 
-        Self::see(board, mv.from, mv.to, target_piece, side) >= threshold
+        Self::see_internal(
+            board,
+            mv.from,
+            mv.to,
+            target_piece,
+            side,
+            mv.promotion_piece(),
+            captured_off_square,
+        ) >= threshold
     }
 
     /// Evaluate whether a piece on `square` (owned by `defender_color`) is safe.
