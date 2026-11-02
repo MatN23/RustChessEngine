@@ -193,6 +193,7 @@ class LichessBot:
                                 
                                 if event_type == 'gameFull':
                                     self.stop_pondering()
+                                    self.engine.new_game()
                                     current_fen = self.setup_game(event)
                                     
                                     account = self.get_account()
