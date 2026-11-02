@@ -146,6 +146,7 @@ impl SearchEngine {
             let soft_limit = time_limit.map(|t| t.mul_f64(0.5));
             let hard_limit = time_limit;
 
+            let previous_iteration_score = prev_score;
             let (score, mv, pv) = if depth >= 5 {
                 self.search_aspiration(&board, depth, prev_score, start_time, soft_limit, hard_limit)
             } else {
@@ -206,7 +207,7 @@ impl SearchEngine {
                     
                     // In desperate positions, always keep thinking if time allows
                     // Only exit early if score is stable AND we've used a lot of time
-                    let score_stable = (prev_score - score).abs() < 20;
+                    let score_stable = (previous_iteration_score - score).abs() < 20;
                     if score < -500 {
                         // Losing badly: keep searching for a swindle unless almost out of time
                         if time_ratio > 1.8 {
@@ -1400,5 +1401,29 @@ mod tests {
         
         let score = thread_data.history_table[12][20];
         assert!(score > 0);
+    }
+}
+
+
+#[cfg(test)]
+mod search_regression_tests {
+    use super::*;
+
+    #[test]
+    fn mate_scores_round_trip_at_same_ply() {
+        for ply in [0usize, 1, 7, 32, 100] {
+            for score in [MATE_SCORE - 3, MATE_SCORE - 40, -MATE_SCORE + 5, -MATE_SCORE + 60] {
+                assert_eq!(score_from_tt(score_to_tt(score, ply), ply), score);
+            }
+        }
+    }
+
+    #[test]
+    fn mate_scores_are_normalized_for_different_probe_plies() {
+        let stored = score_to_tt(MATE_SCORE - 9, 3);
+        assert_eq!(score_from_tt(stored, 7), MATE_SCORE - 13);
+
+        let stored_loss = score_to_tt(-MATE_SCORE + 9, 3);
+        assert_eq!(score_from_tt(stored_loss, 7), -MATE_SCORE + 13);
     }
 }
