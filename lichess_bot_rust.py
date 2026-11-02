@@ -1,6 +1,6 @@
 """
-Lichess Bot with Ultimate Rust Chess Engine
-Expected Performance: 2800-3000+ Elo on Lichess
+Lichess Bot powered by the RustChessEngine search engine.
+Playing strength must be measured with controlled match testing.
 """
 
 import requests
@@ -44,8 +44,7 @@ class LichessBot:
         print(f"✓ Engine ready!")
         print(f"  Threads: {threads}")
         print(f"  Hash: {hash_mb} MB")
-        print(f"  Expected NPS: {threads * 1_500_000:,}")
-        print(f"  Estimated Elo: 2800-3000+")
+        print("  Playing strength: not independently measured")
         
     def start(self):
         """Start the bot"""
