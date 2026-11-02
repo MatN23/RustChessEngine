@@ -66,7 +66,7 @@ impl UCIEngine {
     }
 
     fn uci(&self) {
-        println!("id name RustChessEngine Ultimate v6.0 (Stockfish-Level)");
+        println!("id name RustChessEngine v6.0");
         println!("id author Enhanced Rust Team");
         println!("option name Hash type spin default 512 min 16 max 32768");
         println!("option name Threads type spin default 4 min 1 max 256");
