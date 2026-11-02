@@ -2003,3 +2003,50 @@ fn build_attack_map(board: &BoardState, color: usize, tables: &AttackTables) -> 
     
     attacks
 }
+
+
+#[cfg(test)]
+mod see_regression_tests {
+    use super::*;
+    use crate::board::BoardState;
+    use crate::movegen::{Move, EP_CAPTURE, QUEEN_PROMOTION};
+
+    #[test]
+    fn see_ignores_pawns_removed_from_occupancy() {
+        let board = BoardState::from_fen(
+            "4k3/8/8/8/4P3/8/8/4K3 w - - 0 1"
+        ).unwrap();
+
+        // e4 (square 28) attacks d5 (square 35), but the pawn is absent
+        // from this simulated occupancy and must not remain an attacker.
+        let occupied = board.all_pieces & !(1u64 << 28);
+        let attackers = Evaluator::attackers_to(
+            &board,
+            35,
+            occupied,
+            &ATTACK_TABLES,
+        );
+
+        assert_eq!(attackers & (1u64 << 28), 0);
+    }
+
+    #[test]
+    fn see_counts_quiet_queen_promotion_material_gain() {
+        let board = BoardState::from_fen(
+            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1"
+        ).unwrap();
+        let promotion = Move::new(48, 56, QUEEN_PROMOTION);
+
+        assert!(Evaluator::see_capture(&board, &promotion, 800));
+    }
+
+    #[test]
+    fn see_removes_the_off_target_en_passant_victim() {
+        let board = BoardState::from_fen(
+            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1"
+        ).unwrap();
+        let en_passant = Move::new(36, 43, EP_CAPTURE);
+
+        assert!(Evaluator::see_capture(&board, &en_passant, 100));
+    }
+}
