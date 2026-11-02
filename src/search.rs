@@ -641,11 +641,10 @@ impl SearchEngine {
             }
         }
 
-        let static_eval = Evaluator::evaluate(board);
-        let tactical_danger = !pv_node
-            && !in_check
-            && depth <= 7
-            && Evaluator::has_unprotected_attacked_piece(board, board.side_to_move);
+        let (static_eval, side_has_hanging_piece) =
+            Evaluator::evaluate_with_tactical_info(board);
+        let tactical_danger =
+            !pv_node && !in_check && depth <= 7 && side_has_hanging_piece;
 
         // Reverse futility pruning
         if !pv_node && !in_check && !tactical_danger && depth <= 7 {
@@ -1595,7 +1594,7 @@ mod search_regression_tests {
     #[test]
     fn quiescence_includes_shallow_quiet_checks_but_bounds_them() {
         let board =
-            BoardState::from_fen("4k3/8/8/8/2N5/8/8/4K3 w - - 0 1").unwrap();
+            BoardState::from_fen("r3k3/8/8/8/2N5/8/8/4K3 w - - 0 1").unwrap();
 
         let shallow = generate_quiescence_moves(&board, 0, false);
         assert!(shallow.iter().any(|mv| mv.to_uci() == "c4d6"));

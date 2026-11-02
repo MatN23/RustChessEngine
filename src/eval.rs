@@ -211,13 +211,20 @@ impl Evaluator {
         eprintln!("knight           {}", Self::knight_evaluation(board));
         eprintln!("tempo            {}", Self::tempo_bonus(board));
         eprintln!("connectivity     {}", Self::piece_connectivity(board, phase));
-        eprintln!("hanging_pieces   {}", Self::hanging_piece_evaluation(board));
+        eprintln!("hanging_pieces   {}", Self::hanging_piece_evaluation(board).0);
     }
 
     pub fn evaluate(board: &BoardState) -> i32 {
+        Self::evaluate_with_tactical_info(board).0
+    }
+
+    /// Returns the side-to-move evaluation and whether that side has an
+    /// unprotected piece that the opponent can win in a static exchange.
+    /// Sharing this result avoids rebuilding attack maps in the search.
+    pub fn evaluate_with_tactical_info(board: &BoardState) -> (i32, bool) {
         // Quick draw detection
         if board.is_insufficient_material() || board.halfmove_clock >= 100 {
-            return 0;
+            return (0, false);
         }
 
         let phase = Self::game_phase(board);
@@ -237,14 +244,18 @@ impl Evaluator {
         score += Self::knight_evaluation(board);
         score += Self::tempo_bonus(board);
         score += Self::piece_connectivity(board, phase);
-        score += Self::hanging_piece_evaluation(board);
+        let (hanging_score, side_to_move_has_hanging_piece) =
+            Self::hanging_piece_evaluation(board);
+        score += hanging_score;
 
-        // Return from side-to-move perspective
-        if board.side_to_move == Color::Black {
+        // Return from side-to-move perspective, while preserving the tactical
+        // danger signal for selective-search safeguards.
+        let side_to_move_score = if board.side_to_move == Color::Black {
             -score
         } else {
             score
-        }
+        };
+        (side_to_move_score, side_to_move_has_hanging_piece)
     }
 
 
@@ -261,7 +272,7 @@ impl Evaluator {
     /// Fractional, side-to-move-aware penalty for immediately capturable
     /// undefended pieces. SEE is a tactical approximation, not a legal-move
     /// proof, so this deliberately contributes only part of the estimated gain.
-    fn hanging_piece_evaluation(board: &BoardState) -> i32 {
+    fn hanging_piece_evaluation(board: &BoardState) -> (i32, bool) {
         let white_attacks = build_attack_map(board, Color::White as usize, &ATTACK_TABLES);
         let black_attacks = build_attack_map(board, Color::Black as usize, &ATTACK_TABLES);
         let white_risk = Self::hanging_piece_risk(
@@ -273,8 +284,15 @@ impl Evaluator {
 
         let white_attacker_weight = if board.side_to_move == Color::White { 65 } else { 20 };
         let black_attacker_weight = if board.side_to_move == Color::Black { 65 } else { 20 };
+        let evaluation =
+            (black_risk * black_attacker_weight - white_risk * white_attacker_weight) / 100;
+        let side_to_move_has_hanging_piece = if board.side_to_move == Color::White {
+            white_risk > 0
+        } else {
+            black_risk > 0
+        };
 
-        (black_risk * black_attacker_weight - white_risk * white_attacker_weight) / 100
+        (evaluation, side_to_move_has_hanging_piece)
     }
 
     fn hanging_piece_risk(
@@ -1619,7 +1637,9 @@ mod evaluation_regression_tests {
 
         assert!(Evaluator::has_unprotected_attacked_piece(&hanging, Color::White));
         assert!(!Evaluator::has_unprotected_attacked_piece(&safe, Color::White));
-        assert!(Evaluator::hanging_piece_evaluation(&hanging) < 0);
-        assert_eq!(Evaluator::hanging_piece_evaluation(&safe), 0);
+        assert!(Evaluator::hanging_piece_evaluation(&hanging).0 < 0);
+        assert_eq!(Evaluator::hanging_piece_evaluation(&safe).0, 0);
+        assert!(Evaluator::evaluate_with_tactical_info(&hanging).1);
+        assert!(!Evaluator::evaluate_with_tactical_info(&safe).1);
     }
 }
