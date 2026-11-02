@@ -270,7 +270,7 @@ impl BoardState {
     }
 
     pub fn is_repetition(&self) -> bool {
-        self.position_history.iter().filter(|&&h| h == self.hash).count() >= 2
+        self.position_history.iter().filter(|&&h| h == self.hash).count() >= 3
     }
 
     pub fn is_draw(&self) -> bool {
