@@ -91,7 +91,7 @@ impl MoveGenerator {
     pub fn generate_captures(board: &BoardState) -> MoveList {
         Self::generate_legal_moves(board)
             .into_iter()
-            .filter(|m| m.is_capture())
+            .filter(|m| m.is_capture() || m.is_promotion())
             .collect()
     }
 
