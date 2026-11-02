@@ -1098,9 +1098,9 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
 
     pub fn new_game(&self) {
         let _search_guard = self.search_lock.lock();
-        // Advance the generation so old entries are preferred for replacement
-        // without discarding all transpositions at every new game.
-        self.tt.write().increment_age();
+        // A new game has different repetition and rule-50 history. Clear
+        // position-dependent search data at the game boundary, not per move.
+        self.tt.write().clear();
         self.nodes.store(0, Ordering::Relaxed);
         
         for thread_data in self.thread_data.iter() {
