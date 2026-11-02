@@ -91,7 +91,7 @@ impl MoveGenerator {
     pub fn generate_captures(board: &BoardState) -> MoveList {
         Self::generate_legal_moves(board)
             .into_iter()
-            .filter(|m| m.is_capture())
+            .filter(|m| m.is_capture() || m.is_promotion())
             .collect()
     }
 
@@ -354,4 +354,23 @@ fn square_name(sq: u8) -> String {
     let file = (b'a' + (sq % 8)) as char;
     let rank = (b'1' + (sq / 8)) as char;
     format!("{}{}", file, rank)
+}
+
+
+#[cfg(test)]
+mod tactical_move_tests {
+    use super::*;
+
+    #[test]
+    fn tactical_generation_includes_quiet_promotions() {
+        let board = BoardState::from_fen(
+            "4k3/P7/8/8/8/8/8/4K3 w - - 0 1"
+        ).unwrap();
+
+        let tactical = MoveGenerator::generate_captures(&board);
+        let promotions: Vec<_> = tactical.into_iter().filter(|mv| mv.is_promotion()).collect();
+
+        assert_eq!(promotions.len(), 4);
+        assert!(promotions.iter().all(|mv| !mv.is_capture()));
+    }
 }

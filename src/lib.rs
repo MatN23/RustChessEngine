@@ -36,7 +36,7 @@ impl PyChessEngine {
 
     #[pyo3(signature = (fen, depth=None, time_ms=None))]
     fn search(
-        &mut self,
+        &self,
         py: Python<'_>,
         fen: &str,
         depth: Option<u8>,
@@ -45,11 +45,16 @@ impl PyChessEngine {
         let board = BoardState::from_fen(fen)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))?;
         
-        let result = self.engine.search(
-            board,
-            depth.unwrap_or(64),
-            time_ms,
-        );
+        // Release the GIL while searching so the Lichess event thread can
+        // call stop() immediately when the opponent moves. SearchEngine
+        // serializes search requests internally; stop() remains lock-free.
+        let result = py.allow_threads(|| {
+            self.engine.search(
+                board,
+                depth.unwrap_or(64),
+                time_ms,
+            )
+        });
 
         let dict = pyo3::types::PyDict::new_bound(py);
         
@@ -61,7 +66,7 @@ impl PyChessEngine {
         Ok(dict.into())
     }
 
-    fn new_game(&mut self) {
+    fn new_game(&self) {
         self.engine.new_game();
     }
 
@@ -73,7 +78,7 @@ impl PyChessEngine {
         self.engine.set_multi_pv(count);
     }
     
-    fn set_hash_size(&mut self, size_mb: usize) {
+    fn set_hash_size(&self, size_mb: usize) {
         self.engine.set_hash_size(size_mb);
     }
     
@@ -81,7 +86,7 @@ impl PyChessEngine {
         self.engine.contempt = contempt;
     }
 
-    fn stop(&mut self) {
+    fn stop(&self) {
         self.engine.stop();
     }
 }

@@ -45,6 +45,8 @@ pub struct SearchEngine {
     
     // Per-thread data
     thread_data: Arc<Vec<Mutex<ThreadData>>>,
+    // Serialize searches while allowing stop() to signal the active search.
+    search_lock: Mutex<()>,
 }
 
 struct ThreadData {
@@ -94,15 +96,18 @@ impl SearchEngine {
             multi_pv: 1,
             contempt: 20,
             thread_data: Arc::new(thread_data),
+            search_lock: Mutex::new(()),
         }
     }
 
     pub fn search(
-        &mut self,
+        &self,
         board: BoardState,
         max_depth: u8,
         time_ms: Option<u64>,
     ) -> SearchResult {
+        let _search_guard = self.search_lock.lock();
+
         self.nodes.store(0, Ordering::Relaxed);
         self.stop.store(false, Ordering::Relaxed);
 
@@ -132,7 +137,7 @@ impl SearchEngine {
         let start_time = Instant::now();
         let time_limit = time_ms.map(Duration::from_millis);
 
-        let mut best_move = None;
+        let mut best_move = MoveGenerator::generate_legal_moves(&board).first().copied();
         let mut best_score = 0;
         let mut prev_score = 0;
         let pv_lines = Vec::new();
@@ -146,31 +151,20 @@ impl SearchEngine {
             let soft_limit = time_limit.map(|t| t.mul_f64(0.5));
             let hard_limit = time_limit;
 
+            let previous_iteration_score = prev_score;
             let (score, mv, pv) = if depth >= 5 {
                 self.search_aspiration(&board, depth, prev_score, start_time, soft_limit, hard_limit)
             } else {
                 self.search_root(&board, depth, -INFINITY, INFINITY, start_time, soft_limit, hard_limit)
             };
 
-            if self.stop.load(Ordering::Relaxed) && depth > 1 {
+            // Do not accept results from an interrupted iteration.
+            // Retain the last completed iteration, or the legal fallback.
+            if self.stop.load(Ordering::Relaxed) {
                 break;
             }
 
             if let Some(m) = mv {
-                let score_drop = prev_score - score;
-                
-                // PV stability check
-                let should_reject = depth > 7
-                    && best_move.is_some()
-                    && score_drop > 250
-                    && prev_score > -400
-                    && prev_score < MATE_SCORE - 1000;
-
-                if should_reject {
-                    println!("info string Score drop {}cp, keeping previous move", score_drop);
-                    break;
-                }
-
                 best_move = Some(m);
                 best_score = score;
                 prev_score = score;
@@ -218,7 +212,7 @@ impl SearchEngine {
                     
                     // In desperate positions, always keep thinking if time allows
                     // Only exit early if score is stable AND we've used a lot of time
-                    let score_stable = (prev_score - score).abs() < 20;
+                    let score_stable = (previous_iteration_score - score).abs() < 20;
                     if score < -500 {
                         // Losing badly: keep searching for a swindle unless almost out of time
                         if time_ratio > 1.8 {
@@ -338,18 +332,18 @@ impl SearchEngine {
                 .into_par_iter()
                 .map(|thread_id| {
                     if self.stop.load(Ordering::Relaxed) {
-                        return (-INFINITY, None, MoveList::new());
+                        return (thread_id, -INFINITY, None, MoveList::new());
                     }
 
                     let depth_variation = if thread_id > 0 {
-                        // Vary depth for helper threads
+                        // Helpers use a slightly shallower search to contribute TT entries.
                         let offset = (thread_id as i32) % 4 - 1;
                         (depth as i32 + offset).max(1).min(depth as i32) as u8
                     } else {
                         depth
                     };
 
-                    self.search_root_thread(
+                    let (score, mv, pv) = self.search_root_thread(
                         board,
                         depth_variation,
                         alpha,
@@ -358,16 +352,21 @@ impl SearchEngine {
                         start_time,
                         soft_limit,
                         hard_limit,
-                    )
+                    );
+
+                    (thread_id, score, mv, pv)
                 })
                 .collect();
 
-            // Select best result
-            for (score, mv, pv) in results {
-                if score > best_score {
+            // Root scores from different depths are not comparable. Only the
+            // full-depth main thread may choose the move; helpers contribute
+            // shared transposition-table information.
+            for (thread_id, score, mv, pv) in results {
+                if thread_id == 0 {
                     best_score = score;
                     best_move = mv;
                     best_pv = pv;
+                    break;
                 }
             }
         } else {
@@ -431,6 +430,10 @@ impl SearchEngine {
                 }
                 score
             };
+
+            if self.stop.load(Ordering::Relaxed) {
+                break;
+            }
 
             move_count += 1;
 
@@ -521,7 +524,7 @@ impl SearchEngine {
 
         // Quiescence at leaf nodes
         if depth == 0 {
-            return self.quiescence(board, alpha, beta_new, 0, thread_data);
+            return self.quiescence(board, alpha, beta_new, 0, thread_data, start_time, hard_limit);
         }
 
         // TT probe
@@ -530,10 +533,11 @@ impl SearchEngine {
 
         if let Some(entry) = &tt_entry {
             if entry.depth >= depth && !pv_node && ply > 0 {
+                let tt_score = score_from_tt(entry.score, ply);
                 match entry.flag {
-                    TT_EXACT => return entry.score,
-                    TT_ALPHA if entry.score <= alpha => return alpha,
-                    TT_BETA if entry.score >= beta_new => return beta_new,
+                    TT_EXACT => return tt_score,
+                    TT_ALPHA if tt_score <= alpha => return alpha,
+                    TT_BETA if tt_score >= beta_new => return beta_new,
                     _ => {}
                 }
             }
@@ -582,7 +586,7 @@ impl SearchEngine {
         if depth <= 3 && !in_check && !pv_node {
             let razor_margin = 350 + 200 * depth as i32;
             if static_eval + razor_margin < alpha {
-                let q_score = self.quiescence(board, alpha, beta_new, 0, thread_data);
+                let q_score = self.quiescence(board, alpha, beta_new, 0, thread_data, start_time, hard_limit);
                 if q_score < alpha {
                     return q_score.max(alpha - razor_margin);
                 }
@@ -734,6 +738,10 @@ impl SearchEngine {
                 score
             };
 
+            if self.stop.load(Ordering::Relaxed) {
+                return 0;
+            }
+
             move_count += 1;
 
             if score > best_score {
@@ -772,7 +780,15 @@ impl SearchEngine {
 
                 // Reduce TT traffic: only store reasonably deep entries
                 if depth >= 2 || ply == 0 {
-                    self.tt.write().store(board.hash, depth, beta_new, TT_BETA, Some(mv));
+                    if !self.stop.load(Ordering::Relaxed) {
+                        self.tt.write().store(
+                            board.hash,
+                            depth,
+                            score_to_tt(beta_new, ply),
+                            TT_BETA,
+                            Some(mv),
+                        );
+                    }
                 }
                 return beta_new;
             }
@@ -780,6 +796,10 @@ impl SearchEngine {
             if !mv.is_capture() && !mv.is_promotion() {
                 quiets_tried.push(mv);
             }
+        }
+
+        if self.stop.load(Ordering::Relaxed) {
+            return 0;
         }
 
         let flag = if best_score <= alpha_orig {
@@ -790,29 +810,60 @@ impl SearchEngine {
 
         // Reduce TT traffic for shallow nodes
         if depth >= 2 || ply == 0 {
-            self.tt.write().store(board.hash, depth, best_score, flag, best_move);
+            self.tt.write().store(
+                board.hash,
+                depth,
+                score_to_tt(best_score, ply),
+                flag,
+                best_move,
+            );
         }
         best_score
     }
 
-    fn quiescence(&self, board: &BoardState, mut alpha: i32, beta: i32, depth: i8, thread_data: &mut ThreadData) -> i32 {
+    fn quiescence(
+        &self,
+        board: &BoardState,
+        mut alpha: i32,
+        beta: i32,
+        depth: i8,
+        thread_data: &mut ThreadData,
+        start_time: Instant,
+        hard_limit: Option<Duration>,
+    ) -> i32 {
         thread_data.nodes_searched += 1;
+        if thread_data.nodes_searched & 2047 == 0 {
+            self.nodes.fetch_add(2048, Ordering::Relaxed);
+            thread_data.nodes_searched = 0;
+            if self.check_time_abort(start_time, None, hard_limit) {
+                return 0;
+            }
+        }
+
+        if self.stop.load(Ordering::Relaxed) {
+            return 0;
+        }
 
         if depth < -16 {
             return Evaluator::evaluate(board);
         }
 
         let in_check = board.is_in_check(board.side_to_move);
-        let stand_pat = if in_check { -INFINITY } else { Evaluator::evaluate(board) };
+        let stand_pat = if in_check {
+            -INFINITY
+        } else {
+            Evaluator::evaluate(board)
+        };
 
         if !in_check {
             if stand_pat >= beta {
                 return beta;
             }
 
-            // Delta pruning
-            let delta = 800;
-            if stand_pat + delta < alpha {
+            // A single queen capture is worth 900 cp, and a capture-promotion
+            // can gain substantially more. Keep the delta margin above those
+            // tactical gains so a losing static evaluation cannot prune them.
+            if stand_pat + 1800 < alpha {
                 return alpha;
             }
 
@@ -821,6 +872,7 @@ impl SearchEngine {
             }
         }
 
+        // Captures plus all promotions, including quiet promotions.
         let mut moves = if in_check {
             MoveGenerator::generate_legal_moves(board)
         } else {
@@ -830,24 +882,41 @@ impl SearchEngine {
         if moves.is_empty() {
             if in_check {
                 return -MATE_SCORE;
-            } else {
-                return stand_pat;
             }
+
+            // Stalemate cannot be detected from the capture list alone.
+            if MoveGenerator::generate_legal_moves(board).is_empty() {
+                return -self.contempt;
+            }
+
+            return stand_pat;
         }
 
         self.order_captures_internal(board, &mut moves);
 
         for mv in moves {
-            // SEE pruning in QS: immediately prune captures that lose material statically.
-            // This is critical for tactical stability and search efficiency.
-            if !in_check && !self.see_capture(board, &mv, 0) {
+            // Promotion material gain is handled explicitly by SEE, but don't
+            // prune promotions at the horizon on a static exchange threshold.
+            if !in_check && !mv.is_promotion() && !self.see_capture(board, &mv, 0) {
                 continue;
             }
 
             let mut new_board = board.clone();
             new_board.make_move(&mv);
 
-            let score = -self.quiescence(&new_board, -beta, -alpha, depth - 1, thread_data);
+            let score = -self.quiescence(
+                &new_board,
+                -beta,
+                -alpha,
+                depth - 1,
+                thread_data,
+                start_time,
+                hard_limit,
+            );
+
+            if self.stop.load(Ordering::Relaxed) {
+                return 0;
+            }
 
             if score >= beta {
                 return beta;
@@ -1027,7 +1096,10 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
         false
     }
 
-    pub fn new_game(&mut self) {
+    pub fn new_game(&self) {
+        let _search_guard = self.search_lock.lock();
+        // A new game has different repetition and rule-50 history. Clear
+        // position-dependent search data at the game boundary, not per move.
         self.tt.write().clear();
         self.nodes.store(0, Ordering::Relaxed);
         
@@ -1056,16 +1128,43 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
         self.multi_pv = count.clamp(1, 5);
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
+        // Deliberately does not take search_lock: callers must be able to
+        // interrupt the search that currently owns that lock.
         self.stop.store(true, Ordering::Relaxed);
     }
 
-    pub fn clear_tt(&mut self) {
+    pub fn clear_tt(&self) {
+        let _search_guard = self.search_lock.lock();
         self.tt.write().clear();
     }
 
-    pub fn set_hash_size(&mut self, size_mb: usize) {
+    pub fn set_hash_size(&self, size_mb: usize) {
+        let _search_guard = self.search_lock.lock();
         self.tt.write().resize(size_mb);
+    }
+}
+
+// Normalize mate scores when storing/probing TT entries at different plies.
+#[inline]
+fn score_to_tt(score: i32, ply: usize) -> i32 {
+    if score > MATE_SCORE - MAX_PLY as i32 {
+        score + ply as i32
+    } else if score < -MATE_SCORE + MAX_PLY as i32 {
+        score - ply as i32
+    } else {
+        score
+    }
+}
+
+#[inline]
+fn score_from_tt(score: i32, ply: usize) -> i32 {
+    if score > MATE_SCORE - MAX_PLY as i32 {
+        score - ply as i32
+    } else if score < -MATE_SCORE + MAX_PLY as i32 {
+        score + ply as i32
+    } else {
+        score
     }
 }
 
@@ -1116,17 +1215,16 @@ impl TranspositionTable {
         // Replacement strategy
         let should_replace = if let Some(entry) = &self.table[index] {
             if entry.hash == hash {
-                // Always replace if same position
-                true
+                // Do not let a shallower helper search overwrite a deeper
+                // result for the same position. At equal depth, prefer exact
+                // information over a bound.
+                depth > entry.depth
+                    || (depth == entry.depth && flag == TT_EXACT && entry.flag != TT_EXACT)
             } else {
-                // Replace based on depth and age
+                // Replace based on depth and age.
                 let depth_diff = depth as i32 - entry.depth as i32;
                 let age_diff = self.current_age.wrapping_sub(entry.age);
-                
-                // Replace if:
-                // 1. Much deeper search
-                // 2. Old entry
-                // 3. Depth is similar and entry is old
+
                 depth_diff >= 3 || age_diff >= 4 || (depth_diff >= 0 && age_diff >= 2)
             }
         } else {
@@ -1215,33 +1313,47 @@ mod tests {
     fn test_transposition_table() {
         let mut tt = TranspositionTable::new(16);
         let test_move = Move::new(12, 20, 0);
-        
+
         tt.store(12345, 5, 100, TT_EXACT, Some(test_move));
-        
+
         let entry = tt.probe(12345);
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().score, 100);
     }
 
     #[test]
-    fn test_thread_scaling() {
-        let board = BoardState::default();
-        
-        // Test with 1 thread
-        let mut engine1 = SearchEngine::new(1);
-        let start1 = std::time::Instant::now();
-        engine1.search(board.clone(), 6, None);
-        let time1 = start1.elapsed();
-        
-        // Test with 4 threads
-        let mut engine4 = SearchEngine::new(4);
-        let start4 = std::time::Instant::now();
-        engine4.search(board, 6, None);
-        let time4 = start4.elapsed();
-        
-        // 4 threads should be faster (though not 4x due to overhead)
-        println!("1 thread: {:?}, 4 threads: {:?}", time1, time4);
-        assert!(time4 < time1);
+    fn test_tt_does_not_replace_deeper_same_position_with_shallow_entry() {
+        let mut tt = TranspositionTable::new(16);
+        let deeper = Move::new(12, 20, 0);
+        let shallower = Move::new(11, 27, 0);
+
+        tt.store(12345, 8, 240, TT_EXACT, Some(deeper));
+        tt.store(12345, 5, -80, TT_BETA, Some(shallower));
+
+        let entry = tt.probe(12345).unwrap();
+        assert_eq!(entry.depth, 8);
+        assert_eq!(entry.score, 240);
+        assert_eq!(entry.best_move, Some(deeper));
+    }
+
+    #[test]
+    fn test_single_and_parallel_search_return_valid_moves() {
+        // Use a non-book position so depth 6 actually exercises the search.
+        // Wall-clock speed assertions are too noisy for a unit test and the
+        // starting position exits early through the opening book.
+        let fen = "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 10";
+        let board = BoardState::from_fen(fen).unwrap();
+
+        let mut single_threaded = SearchEngine::new(1);
+        let single_result = single_threaded.search(board.clone(), 6, None);
+
+        let mut parallel = SearchEngine::new(4);
+        let parallel_result = parallel.search(board, 6, None);
+
+        assert!(single_result.best_move.is_some());
+        assert!(parallel_result.best_move.is_some());
+        assert!(single_result.nodes > 0);
+        assert!(parallel_result.nodes > 0);
     }
 
     #[test]
@@ -1320,5 +1432,29 @@ mod tests {
         
         let score = thread_data.history_table[12][20];
         assert!(score > 0);
+    }
+}
+
+
+#[cfg(test)]
+mod search_regression_tests {
+    use super::*;
+
+    #[test]
+    fn mate_scores_round_trip_at_same_ply() {
+        for ply in [0usize, 1, 7, 32, 100] {
+            for score in [MATE_SCORE - 3, MATE_SCORE - 40, -MATE_SCORE + 5, -MATE_SCORE + 60] {
+                assert_eq!(score_from_tt(score_to_tt(score, ply), ply), score);
+            }
+        }
+    }
+
+    #[test]
+    fn mate_scores_are_normalized_for_different_probe_plies() {
+        let stored = score_to_tt(MATE_SCORE - 9, 3);
+        assert_eq!(score_from_tt(stored, 7), MATE_SCORE - 13);
+
+        let stored_loss = score_to_tt(-MATE_SCORE + 9, 3);
+        assert_eq!(score_from_tt(stored_loss, 7), -MATE_SCORE + 13);
     }
 }
