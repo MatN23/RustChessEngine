@@ -11,6 +11,10 @@ crate-type = ["cdylib", "rlib"]
 name = "chess_uci"
 path = "src/main.rs"
 
+[[bin]]
+name = "lichess_bot"
+path = "src/lichess_main.rs"
+
 [dependencies]
 smallvec = "1.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
@@ -23,6 +27,7 @@ memmap2 = "0.9"
 byteorder = "1.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+ureq = "2.12"
 
 [features]
 default = ["python"]
