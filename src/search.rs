@@ -780,7 +780,7 @@ impl SearchEngine {
                 -self.pvs(&new_board, depth.saturating_sub(1).saturating_add(extension), -beta_new, -alpha, ply + 1, pv_node, thread_id, start_time, soft_limit, hard_limit, thread_data)
             } else {
                 // Late move reductions
-                let reduction = if move_count >= 3 && depth >= 3 && !in_check && !gives_check && !mv.is_capture() && !mv.is_promotion() {
+                let reduction = if move_count >= 3 && depth >= 3 && !in_check && !tactical_danger && !gives_check && !mv.is_capture() && !mv.is_promotion() {
                     let base = LMR_TABLE[depth.min(63) as usize][move_count.min(63)];
                     let mut r = base;
 
