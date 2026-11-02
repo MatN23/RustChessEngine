@@ -211,6 +211,7 @@ impl Evaluator {
         eprintln!("knight           {}", Self::knight_evaluation(board));
         eprintln!("tempo            {}", Self::tempo_bonus(board));
         eprintln!("connectivity     {}", Self::piece_connectivity(board, phase));
+        eprintln!("hanging_pieces   {}", Self::hanging_piece_evaluation(board));
     }
 
     pub fn evaluate(board: &BoardState) -> i32 {
@@ -236,6 +237,7 @@ impl Evaluator {
         score += Self::knight_evaluation(board);
         score += Self::tempo_bonus(board);
         score += Self::piece_connectivity(board, phase);
+        score += Self::hanging_piece_evaluation(board);
 
         // Return from side-to-move perspective
         if board.side_to_move == Color::Black {
@@ -243,6 +245,85 @@ impl Evaluator {
         } else {
             score
         }
+    }
+
+
+    /// True when `color` has an attacked, undefended non-king piece that
+    /// appears to lose material in a static exchange. Used to protect defensive
+    /// moves from shallow forward pruning.
+    pub fn has_unprotected_attacked_piece(board: &BoardState, color: Color) -> bool {
+        let victim_color = color as usize;
+        let enemy_attacks = build_attack_map(board, 1 - victim_color, &ATTACK_TABLES);
+        let own_attacks = build_attack_map(board, victim_color, &ATTACK_TABLES);
+        Self::hanging_piece_risk(board, victim_color, enemy_attacks, own_attacks) > 0
+    }
+
+    /// Fractional, side-to-move-aware penalty for immediately capturable
+    /// undefended pieces. SEE is a tactical approximation, not a legal-move
+    /// proof, so this deliberately contributes only part of the estimated gain.
+    fn hanging_piece_evaluation(board: &BoardState) -> i32 {
+        let white_attacks = build_attack_map(board, Color::White as usize, &ATTACK_TABLES);
+        let black_attacks = build_attack_map(board, Color::Black as usize, &ATTACK_TABLES);
+        let white_risk = Self::hanging_piece_risk(
+            board, Color::White as usize, black_attacks, white_attacks,
+        );
+        let black_risk = Self::hanging_piece_risk(
+            board, Color::Black as usize, white_attacks, black_attacks,
+        );
+
+        let white_attacker_weight = if board.side_to_move == Color::White { 65 } else { 20 };
+        let black_attacker_weight = if board.side_to_move == Color::Black { 65 } else { 20 };
+
+        (black_risk * black_attacker_weight - white_risk * white_attacker_weight) / 100
+    }
+
+    fn hanging_piece_risk(
+        board: &BoardState,
+        victim_color: usize,
+        enemy_attack_map: Bitboard,
+        own_attack_map: Bitboard,
+    ) -> i32 {
+        let attacker_color = 1 - victim_color;
+        let mut total_risk = 0;
+
+        // Pawns through queens; king safety is handled separately.
+        for piece_type in 1..=5 {
+            let mut victims = board.pieces[victim_color][piece_type] & enemy_attack_map;
+            while victims != 0 {
+                let (remaining, square_opt) = pop_lsb(victims);
+                victims = remaining;
+                let square = square_opt.unwrap();
+                let target_bit = 1u64 << square;
+
+                // Ignore defended pieces; this term targets obvious loose pieces.
+                if own_attack_map & target_bit != 0 {
+                    continue;
+                }
+
+                let mut candidates = Self::attackers_to(
+                    board, square, board.all_pieces, &ATTACK_TABLES,
+                ) & board.color_bb[attacker_color];
+                let mut best_gain = 0;
+                while candidates != 0 {
+                    let (rest, attacker_square) = pop_lsb(candidates);
+                    candidates = rest;
+                    let gain = Self::see(
+                        board,
+                        attacker_square.unwrap(),
+                        square,
+                        piece_type,
+                        attacker_color,
+                    );
+                    best_gain = best_gain.max(gain);
+                }
+
+                if best_gain > 0 {
+                    total_risk += best_gain;
+                }
+            }
+        }
+
+        total_risk.min(2000)
     }
 
     // 🎯 SEE - Static Exchange Evaluation (Swap List)
@@ -1527,5 +1608,18 @@ mod evaluation_regression_tests {
         let g7_bishop =
             BoardState::from_fen("7k/5pb1/8/8/8/8/8/7K w - - 0 1").unwrap();
         assert_eq!(Evaluator::fianchetto_patterns(&g7_bishop), -FIANCHETTO_BONUS);
+    }
+
+    #[test]
+    fn undefended_attacked_rook_is_detected_and_penalized() {
+        let hanging =
+            BoardState::from_fen("7k/8/8/4p3/5R2/8/8/K7 w - - 0 1").unwrap();
+        let safe =
+            BoardState::from_fen("7k/8/8/4p3/8/5R2/8/K7 w - - 0 1").unwrap();
+
+        assert!(Evaluator::has_unprotected_attacked_piece(&hanging, Color::White));
+        assert!(!Evaluator::has_unprotected_attacked_piece(&safe, Color::White));
+        assert!(Evaluator::hanging_piece_evaluation(&hanging) < 0);
+        assert_eq!(Evaluator::hanging_piece_evaluation(&safe), 0);
     }
 }
