@@ -1475,17 +1475,19 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let first_move = Move::new(12, 20, 0);
         let replacement_move = Move::new(11, 27, 0);
+        let first_hash = 1u64;
+        let colliding_hash = first_hash + tt.size as u64;
 
-        tt.store(1, 12, 100, TT_EXACT, Some(first_move));
+        tt.store(first_hash, 12, 100, TT_EXACT, Some(first_move));
         for _ in 0..4 {
             tt.increment_age();
         }
-        tt.store(2, 4, 25, TT_ALPHA, Some(replacement_move));
+        tt.store(colliding_hash, 4, 25, TT_ALPHA, Some(replacement_move));
 
-        let entry = tt.probe(2).expect("new generation entry should replace stale collision");
+        let entry = tt.probe(colliding_hash).expect("new generation entry should replace stale collision");
         assert_eq!(entry.best_move, Some(replacement_move));
         assert_eq!(entry.age, tt.current_age);
-        assert!(tt.probe(1).is_none());
+        assert!(tt.probe(first_hash).is_none());
     }
 
     #[test]
@@ -1493,12 +1495,14 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let deeper = Move::new(12, 20, 0);
         let shallower = Move::new(11, 27, 0);
+        let deeper_hash = 1u64;
+        let colliding_hash = deeper_hash + tt.size as u64;
 
-        tt.store(1, 12, 100, TT_EXACT, Some(deeper));
-        tt.store(2, 4, 25, TT_ALPHA, Some(shallower));
+        tt.store(deeper_hash, 12, 100, TT_EXACT, Some(deeper));
+        tt.store(colliding_hash, 4, 25, TT_ALPHA, Some(shallower));
 
-        assert!(tt.probe(1).is_some());
-        assert!(tt.probe(2).is_none());
+        assert!(tt.probe(deeper_hash).is_some());
+        assert!(tt.probe(colliding_hash).is_none());
     }
 
     #[test]
