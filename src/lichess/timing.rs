@@ -1,3 +1,5 @@
+//! export FIXED_MOVE_TIME_MS=5000 to override the default 5s per move allocation.
+
 //! Per-move time allocation. The core formula is a 1:1 port of
 //! `calculate_time_allocation` from the old Python bot; `move_time_ms` adds a
 //! final safety cap that the Python version lacked.
@@ -40,8 +42,10 @@ pub fn calculate_time_allocation(my_time: u64, my_inc: u64, move_count: usize) -
 /// We additionally never plan to spend more than half of the time left after
 /// overhead.
 pub fn move_time_ms(my_time: u64, my_inc: u64, move_count: usize, overhead_ms: u64) -> u64 {
-    let alloc = calculate_time_allocation(my_time, my_inc, move_count);
-    let wanted = (alloc - overhead_ms as f64).max(200.0) as u64;
-    let cap = (my_time.saturating_sub(overhead_ms) / 2).max(50);
-    wanted.min(cap)
+    let fixed_ms: u64 = std::env::var("FIXED_MOVE_TIME_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5000);
+
+    fixed_ms.saturating_sub(overhead_ms).max(200)
 }
