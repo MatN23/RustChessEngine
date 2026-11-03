@@ -53,6 +53,8 @@ struct ThreadData {
     killer_moves: [[Option<Move>; 2]; MAX_PLY],
     history_table: [[i32; 64]; 64],
     countermove_table: [[Option<Move>; 64]; 64],
+    // Local node counter: avoid a contended shared atomic on every node.
+    nodes_searched: u64,
     pv_table: [[Option<Move>; MAX_PLY]; MAX_PLY],
     pv_length: [usize; MAX_PLY],
 }
@@ -63,6 +65,7 @@ impl ThreadData {
             killer_moves: [[None; 2]; MAX_PLY],
             history_table: [[0; 64]; 64],
             countermove_table: [[None; 64]; 64],
+            nodes_searched: 0,
             pv_table: [[None; MAX_PLY]; MAX_PLY],
             pv_length: [0; MAX_PLY],
         }
@@ -72,6 +75,7 @@ impl ThreadData {
         self.killer_moves = [[None; 2]; MAX_PLY];
         self.history_table = [[0; 64]; 64];
         self.countermove_table = [[None; 64]; 64];
+        self.nodes_searched = 0;
         self.pv_table = [[None; MAX_PLY]; MAX_PLY];
         self.pv_length = [0; MAX_PLY];
     }
@@ -407,6 +411,7 @@ impl SearchEngine {
             new_board.make_move(&moves[0]);
             let mut thread_data = self.thread_data[0].lock();
             let score = -self.pvs(&new_board, depth.saturating_sub(1), -beta, -alpha, 1, true, 0, start_time, soft_limit, hard_limit, &mut thread_data);
+            self.flush_thread_nodes(&mut thread_data);
             let mut pv = MoveList::new();
             pv.push(moves[0]);
             return (score, Some(moves[0]), pv);
@@ -431,9 +436,10 @@ impl SearchEngine {
                     }
 
                     let depth_variation = if thread_id > 0 {
-                        // Helpers use a slightly shallower search to contribute TT entries.
-                        let offset = (thread_id as i32) % 4 - 1;
-                        (depth as i32 + offset).max(1).min(depth as i32) as u8
+                        // Helpers contribute shallower TT entries; only thread 0
+                        // performs the full-depth root search used for move selection.
+                        let offset = 1 + ((thread_id - 1) % 3) as u8;
+                        depth.saturating_sub(offset).max(1)
                     } else {
                         depth
                     };
@@ -559,6 +565,7 @@ impl SearchEngine {
             }
         }
 
+        self.flush_thread_nodes(&mut thread_data);
         drop(thread_data);
         (best_score, best_move, best_pv)
     }
@@ -578,11 +585,12 @@ impl SearchEngine {
         hard_limit: Option<Duration>,
         thread_data: &mut ThreadData,
     ) -> i32 {
-        // Count every visited node, including nodes that return from a TT
-        // cutoff. Batched updates previously under-reported short searches
-        // and left the final partial batch uncounted.
-        self.nodes.fetch_add(1, Ordering::Relaxed);
-        if self.check_time_abort(start_time, soft_limit, hard_limit) {
+        // Keep the hot path thread-local. Publish node totals in batches and
+        // check the wall clock periodically; stop requests remain checked at
+        // every node so UCI cancellation stays responsive.
+        if self.record_search_node(thread_data)
+            && self.check_time_abort(start_time, soft_limit, hard_limit)
+        {
             return 0;
         }
 
@@ -917,10 +925,11 @@ impl SearchEngine {
         start_time: Instant,
         hard_limit: Option<Duration>,
     ) -> i32 {
-        // Quiescence nodes are part of the search tree and must be counted
-        // individually as well.
-        self.nodes.fetch_add(1, Ordering::Relaxed);
-        if self.check_time_abort(start_time, None, hard_limit) {
+        // Quiescence shares the same thread-local counter and periodic clock
+        // checks as the principal search.
+        if self.record_search_node(thread_data)
+            && self.check_time_abort(start_time, None, hard_limit)
+        {
             return 0;
         }
 
@@ -1160,6 +1169,27 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
                     thread_data.history_table[from][to] /= 2;
                 }
             }
+        }
+    }
+
+    #[inline(always)]
+    fn record_search_node(&self, thread_data: &mut ThreadData) -> bool {
+        thread_data.nodes_searched += 1;
+        let check_time = thread_data.nodes_searched & 255 == 0;
+
+        if thread_data.nodes_searched & 2047 == 0 {
+            self.nodes.fetch_add(2048, Ordering::Relaxed);
+            thread_data.nodes_searched = 0;
+        }
+
+        check_time
+    }
+
+    #[inline]
+    fn flush_thread_nodes(&self, thread_data: &mut ThreadData) {
+        let remaining = std::mem::take(&mut thread_data.nodes_searched);
+        if remaining != 0 {
+            self.nodes.fetch_add(remaining, Ordering::Relaxed);
         }
     }
 
@@ -1445,17 +1475,19 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let first_move = Move::new(12, 20, 0);
         let replacement_move = Move::new(11, 27, 0);
+        let first_hash = 1u64;
+        let colliding_hash = first_hash + tt.size as u64;
 
-        tt.store(1, 12, 100, TT_EXACT, Some(first_move));
+        tt.store(first_hash, 12, 100, TT_EXACT, Some(first_move));
         for _ in 0..4 {
             tt.increment_age();
         }
-        tt.store(2, 4, 25, TT_ALPHA, Some(replacement_move));
+        tt.store(colliding_hash, 4, 25, TT_ALPHA, Some(replacement_move));
 
-        let entry = tt.probe(2).expect("new generation entry should replace stale collision");
+        let entry = tt.probe(colliding_hash).expect("new generation entry should replace stale collision");
         assert_eq!(entry.best_move, Some(replacement_move));
         assert_eq!(entry.age, tt.current_age);
-        assert!(tt.probe(1).is_none());
+        assert!(tt.probe(first_hash).is_none());
     }
 
     #[test]
@@ -1463,12 +1495,35 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let deeper = Move::new(12, 20, 0);
         let shallower = Move::new(11, 27, 0);
+        let deeper_hash = 1u64;
+        let colliding_hash = deeper_hash + tt.size as u64;
 
-        tt.store(1, 12, 100, TT_EXACT, Some(deeper));
-        tt.store(2, 4, 25, TT_ALPHA, Some(shallower));
+        tt.store(deeper_hash, 12, 100, TT_EXACT, Some(deeper));
+        tt.store(colliding_hash, 4, 25, TT_ALPHA, Some(shallower));
 
-        assert!(tt.probe(1).is_some());
-        assert!(tt.probe(2).is_none());
+        assert!(tt.probe(deeper_hash).is_some());
+        assert!(tt.probe(colliding_hash).is_none());
+    }
+
+    #[test]
+    fn node_counter_batches_shared_updates_and_flushes_remainder() {
+        let engine = SearchEngine::new(1);
+        let mut thread_data = ThreadData::new();
+
+        for index in 0..2048 {
+            let check_time = engine.record_search_node(&mut thread_data);
+            assert_eq!(check_time, (index + 1) % 256 == 0);
+        }
+        assert_eq!(engine.nodes.load(Ordering::Relaxed), 2048);
+        assert_eq!(thread_data.nodes_searched, 0);
+
+        for _ in 0..17 {
+            engine.record_search_node(&mut thread_data);
+        }
+        assert_eq!(engine.nodes.load(Ordering::Relaxed), 2048);
+        engine.flush_thread_nodes(&mut thread_data);
+        assert_eq!(engine.nodes.load(Ordering::Relaxed), 2065);
+        assert_eq!(thread_data.nodes_searched, 0);
     }
 
     #[test]
