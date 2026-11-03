@@ -42,10 +42,16 @@ pub fn calculate_time_allocation(my_time: u64, my_inc: u64, move_count: usize) -
 /// We additionally never plan to spend more than half of the time left after
 /// overhead.
 pub fn move_time_ms(my_time: u64, my_inc: u64, move_count: usize, overhead_ms: u64) -> u64 {
-    let fixed_ms: u64 = std::env::var("FIXED_MOVE_TIME_MS")
+    // A fixed override can request a target budget, but it must never
+    // bypass the clock-safety cap. Without an override, adapt to the clock,
+    // increment, and move number as the original allocator intended.
+    let allocation_ms = std::env::var("FIXED_MOVE_TIME_MS")
         .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(5000);
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v as f64)
+        .unwrap_or_else(|| calculate_time_allocation(my_time, my_inc, move_count));
 
-    fixed_ms.saturating_sub(overhead_ms).max(200)
+    let wanted = (allocation_ms - overhead_ms as f64).max(200.0) as u64;
+    let clock_cap = (my_time.saturating_sub(overhead_ms) / 2).max(50);
+    wanted.min(clock_cap)
 }
