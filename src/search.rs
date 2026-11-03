@@ -53,7 +53,6 @@ struct ThreadData {
     killer_moves: [[Option<Move>; 2]; MAX_PLY],
     history_table: [[i32; 64]; 64],
     countermove_table: [[Option<Move>; 64]; 64],
-    nodes_searched: u64,
     pv_table: [[Option<Move>; MAX_PLY]; MAX_PLY],
     pv_length: [usize; MAX_PLY],
 }
@@ -64,7 +63,6 @@ impl ThreadData {
             killer_moves: [[None; 2]; MAX_PLY],
             history_table: [[0; 64]; 64],
             countermove_table: [[None; 64]; 64],
-            nodes_searched: 0,
             pv_table: [[None; MAX_PLY]; MAX_PLY],
             pv_length: [0; MAX_PLY],
         }
@@ -74,7 +72,6 @@ impl ThreadData {
         self.killer_moves = [[None; 2]; MAX_PLY];
         self.history_table = [[0; 64]; 64];
         self.countermove_table = [[None; 64]; 64];
-        self.nodes_searched = 0;
         self.pv_table = [[None; MAX_PLY]; MAX_PLY];
         self.pv_length = [0; MAX_PLY];
     }
@@ -168,6 +165,10 @@ impl SearchEngine {
 
         self.nodes.store(0, Ordering::Relaxed);
         self.stop.store(false, Ordering::Relaxed);
+        // Advance once per search invocation (UCI go), not once per chess
+        // move. This makes entries from recent searches preferred while
+        // retaining useful transpositions across consecutive positions.
+        self.tt.write().increment_age();
 
         // Clear thread data
         for thread_data in self.thread_data.iter() {
@@ -577,15 +578,12 @@ impl SearchEngine {
         hard_limit: Option<Duration>,
         thread_data: &mut ThreadData,
     ) -> i32 {
-        // Periodic stop check
-        thread_data.nodes_searched += 1;
-        if thread_data.nodes_searched & 2047 == 0 {
-            self.nodes.fetch_add(2048, Ordering::Relaxed);
-            thread_data.nodes_searched = 0;
-
-            if self.check_time_abort(start_time, soft_limit, hard_limit) {
-                return 0;
-            }
+        // Count every visited node, including nodes that return from a TT
+        // cutoff. Batched updates previously under-reported short searches
+        // and left the final partial batch uncounted.
+        self.nodes.fetch_add(1, Ordering::Relaxed);
+        if self.check_time_abort(start_time, soft_limit, hard_limit) {
+            return 0;
         }
 
         if self.stop.load(Ordering::Relaxed) {
@@ -919,13 +917,11 @@ impl SearchEngine {
         start_time: Instant,
         hard_limit: Option<Duration>,
     ) -> i32 {
-        thread_data.nodes_searched += 1;
-        if thread_data.nodes_searched & 2047 == 0 {
-            self.nodes.fetch_add(2048, Ordering::Relaxed);
-            thread_data.nodes_searched = 0;
-            if self.check_time_abort(start_time, None, hard_limit) {
-                return 0;
-            }
+        // Quiescence nodes are part of the search tree and must be counted
+        // individually as well.
+        self.nodes.fetch_add(1, Ordering::Relaxed);
+        if self.check_time_abort(start_time, None, hard_limit) {
+            return 0;
         }
 
         if self.stop.load(Ordering::Relaxed) {
@@ -1441,6 +1437,38 @@ mod tests {
         assert!(parallel_result.best_move.is_some());
         assert!(single_result.nodes > 0);
         assert!(parallel_result.nodes > 0);
+    }
+
+
+    #[test]
+    fn tt_ages_advance_per_generation_and_replace_stale_collisions() {
+        let mut tt = TranspositionTable::new(1);
+        let first_move = Move::new(12, 20, 0);
+        let replacement_move = Move::new(11, 27, 0);
+
+        tt.store(1, 12, 100, TT_EXACT, Some(first_move));
+        for _ in 0..4 {
+            tt.increment_age();
+        }
+        tt.store(2, 4, 25, TT_ALPHA, Some(replacement_move));
+
+        let entry = tt.probe(2).expect("new generation entry should replace stale collision");
+        assert_eq!(entry.best_move, Some(replacement_move));
+        assert_eq!(entry.age, tt.current_age);
+        assert!(tt.probe(1).is_none());
+    }
+
+    #[test]
+    fn tt_does_not_replace_deeper_entry_with_shallow_collision_in_same_generation() {
+        let mut tt = TranspositionTable::new(1);
+        let deeper = Move::new(12, 20, 0);
+        let shallower = Move::new(11, 27, 0);
+
+        tt.store(1, 12, 100, TT_EXACT, Some(deeper));
+        tt.store(2, 4, 25, TT_ALPHA, Some(shallower));
+
+        assert!(tt.probe(1).is_some());
+        assert!(tt.probe(2).is_none());
     }
 
     #[test]
