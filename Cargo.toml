@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "lichess_bot"
 path = "src/lichess_main.rs"
 
+[[bin]]
+name = "sf_match"
+path = "src/sf_match.rs"
+
 [dependencies]
 smallvec = "1.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }

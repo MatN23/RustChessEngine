@@ -91,13 +91,14 @@ RUSTFLAGS="-C target-cpu=native" maturin develop --release
 
 3. **Run the Bot**:
 ```bash
-python3 lichess_bot.py YOUR_LICHESS_TOKEN
+cargo build --release --bin lichess_bot
+./target/release/lichess_bot YOUR_LICHESS_TOKEN
 ```
 
 Or set as environment variable:
 ```bash
 export LICHESS_TOKEN="your_token_here"
-python3 lichess_bot.py
+./target/release/lichess_bot
 ```
 
 ### From Python
@@ -158,7 +159,7 @@ rust-chess-engine/
 │   ├── opening_book.rs     # Opening book
 │   └── uci.rs              # UCI protocol implementation
 ├── Cargo.toml              # Rust dependencies
-├── lichess_bot.py          # Lichess bot integration
+├── src/lichess_main.rs     # Native Rust Lichess bot
 └── README.md
 ```
 

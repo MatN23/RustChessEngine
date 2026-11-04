@@ -1,4 +1,4 @@
-// GENERATED from calculate_time_allocation() in lichess_bot_rust.py (overhead = 300 ms).
+// GENERATED from calculate_time_allocation() in the (now removed) Python bot (overhead = 300 ms).
 // (my_time, my_inc, move_count, python_raw_alloc, python_final_ms)
 pub const CASES: &[(u64, u64, usize, f64, u64)] = &[
     (0, 0, 0, 200.0, 200),

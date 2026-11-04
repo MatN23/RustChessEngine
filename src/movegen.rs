@@ -73,26 +73,49 @@ pub struct MoveGenerator;
 impl MoveGenerator {
     pub fn generate_legal_moves(board: &BoardState) -> MoveList {
         let pseudo_legal = Self::generate_pseudo_legal(board);
+        Self::filter_legal(board, pseudo_legal)
+    }
+
+    /// Legal captures and promotions only (quiet promotions included).
+    /// Legality is tested only for the few moves that survive the filter, so
+    /// quiescence no longer pays for a full legal move generation per node.
+    pub fn generate_captures(board: &BoardState) -> MoveList {
+        let mut tactical = Self::generate_pseudo_legal(board);
+        tactical.retain(|m| m.is_capture() || m.is_promotion());
+        Self::filter_legal(board, tactical)
+    }
+
+    /// Removes pseudo-legal moves that leave the mover's king attacked.
+    /// A move can only expose the king if the king is already in check, the
+    /// king itself moves, it is en passant (two pawns leave a rank), or the
+    /// moving piece stands on a line through the king (possible pin). Every
+    /// other move is legal without making it.
+    fn filter_legal(board: &BoardState, pseudo_legal: MoveList) -> MoveList {
+        let us = board.side_to_move;
+        let king_sq = match board.get_king_square(us) {
+            Some(sq) => sq,
+            None => return pseudo_legal,
+        };
+        let in_check = board.is_square_attacked(king_sq, us.flip());
+        let king_lines = ATTACK_TABLES.get_queen_attacks(king_sq, 0);
         let mut legal_moves = MoveList::with_capacity(pseudo_legal.len());
 
         for mv in pseudo_legal {
-            let mut new_board = board.clone();
-            new_board.make_move(&mv);
-            
-            // Check if own king is in check after move (illegal)
-            if !new_board.is_in_check(board.side_to_move) {
-                legal_moves.push(mv);
+            let needs_test = in_check
+                || mv.from == king_sq
+                || mv.flags == EP_CAPTURE
+                || (king_lines >> mv.from) & 1 != 0;
+            if needs_test {
+                let mut new_board = board.clone_lite();
+                new_board.make_move(&mv);
+                if new_board.is_in_check(us) {
+                    continue;
+                }
             }
+            legal_moves.push(mv);
         }
 
         legal_moves
-    }
-
-    pub fn generate_captures(board: &BoardState) -> MoveList {
-        Self::generate_legal_moves(board)
-            .into_iter()
-            .filter(|m| m.is_capture() || m.is_promotion())
-            .collect()
     }
 
     fn generate_pseudo_legal(board: &BoardState) -> MoveList {
@@ -372,5 +395,47 @@ mod tactical_move_tests {
 
         assert_eq!(promotions.len(), 4);
         assert!(promotions.iter().all(|mv| !mv.is_capture()));
+    }
+
+    fn perft(board: &BoardState, depth: u32) -> u64 {
+        let moves = MoveGenerator::generate_legal_moves(board);
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+        moves
+            .iter()
+            .map(|mv| {
+                let mut b = board.clone();
+                b.make_move(mv);
+                perft(&b, depth - 1)
+            })
+            .sum()
+    }
+
+    #[test]
+    fn fast_legality_filter_matches_known_perft() {
+        let cases = [
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 3, 8902),
+            ("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3, 97862),
+            ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4, 43238),
+            ("8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1", 3, 863),
+        ];
+        for (fen, depth, expected) in cases {
+            let board = BoardState::from_fen(fen).unwrap();
+            assert_eq!(perft(&board, depth), expected, "perft mismatch for {}", fen);
+        }
+    }
+
+    #[test]
+    fn generate_captures_is_legal_subset_of_all_moves() {
+        let board = BoardState::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        )
+        .unwrap();
+        let all = MoveGenerator::generate_legal_moves(&board);
+        let caps = MoveGenerator::generate_captures(&board);
+        let expected: Vec<_> = all.iter().filter(|m| m.is_capture() || m.is_promotion()).collect();
+        assert_eq!(caps.len(), expected.len());
+        assert!(caps.iter().all(|m| all.contains(m)));
     }
 }

@@ -1,4 +1,4 @@
-//! Native Rust Lichess bot. Replaces `lichess_bot_rust.py` (no Python, no PyO3,
+//! Native Rust Lichess bot. Native replacement for the old Python bot, which has been removed (no Python, no PyO3,
 //! no UCI subprocess): the bot calls `SearchEngine` directly and keeps the real
 //! `BoardState` (including repetition history) for the whole game.
 //!
