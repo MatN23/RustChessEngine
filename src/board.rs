@@ -269,8 +269,52 @@ impl BoardState {
         false
     }
 
+    /// Cheap copy that drops the repetition history. Only for short-lived
+    /// legality probes where history is irrelevant.
+    #[inline]
+    pub fn clone_lite(&self) -> BoardState {
+        BoardState {
+            pieces: self.pieces,
+            color_bb: self.color_bb,
+            all_pieces: self.all_pieces,
+            side_to_move: self.side_to_move,
+            castling_rights: self.castling_rights,
+            ep_square: self.ep_square,
+            halfmove_clock: self.halfmove_clock,
+            fullmove_number: self.fullmove_number,
+            hash: self.hash,
+            position_history: SmallVec::new(),
+        }
+    }
+
+    /// True threefold repetition (used for game-end claims).
     pub fn is_repetition(&self) -> bool {
         self.position_history.iter().filter(|&&h| h == self.hash).count() >= 3
+    }
+
+    /// Search-style repetition: the current position already occurred earlier
+    /// (in the game or in the current search line). Treating the first repeat as
+    /// a draw is standard in engines; waiting for the third occurrence lets the
+    /// engine walk into repetitions it believes are winning. `position_history`
+    /// is cleared on every irreversible move, so this scan is short and the
+    /// current position is the last entry.
+    #[inline]
+    pub fn is_repetition_in_search(&self) -> bool {
+        let h = &self.position_history;
+        let n = h.len();
+        if n < 5 {
+            return false;
+        }
+        // Only same-side-to-move positions can repeat: step back by 2 plies,
+        // skipping the current entry (last) and its immediate predecessor.
+        let mut i = n as isize - 3;
+        while i >= 0 {
+            if h[i as usize] == self.hash {
+                return true;
+            }
+            i -= 2;
+        }
+        false
     }
 
     pub fn is_draw(&self) -> bool {

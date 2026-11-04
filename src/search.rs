@@ -1,12 +1,12 @@
 use crate::board::{BoardState, Color, PIECE_VALUES};
 use crate::movegen::{Move, MoveGenerator, MoveList};
+use smallvec::SmallVec;
 use crate::eval::Evaluator;
 use crate::opening_book;
 use parking_lot::{Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use rayon::prelude::*;
 
 pub const INFINITY: i32 = 999999;
 pub const MATE_SCORE: i32 = 900000;
@@ -40,6 +40,8 @@ pub struct SearchEngine {
     threads: usize,
     nodes: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    // Set when the main thread completes an iteration; halts helper threads only.
+    helper_stop: Arc<AtomicBool>,
     multi_pv: usize,
     pub contempt: i32,
     
@@ -55,6 +57,9 @@ struct ThreadData {
     countermove_table: [[Option<Move>; 64]; 64],
     // Local node counter: avoid a contended shared atomic on every node.
     nodes_searched: u64,
+    // true at ply p when the move that led into p was a null move
+    null_at: [bool; MAX_PLY],
+    is_helper: bool,
     pv_table: [[Option<Move>; MAX_PLY]; MAX_PLY],
     pv_length: [usize; MAX_PLY],
 }
@@ -66,12 +71,32 @@ impl ThreadData {
             history_table: [[0; 64]; 64],
             countermove_table: [[None; 64]; 64],
             nodes_searched: 0,
+            null_at: [false; MAX_PLY],
+            is_helper: false,
             pv_table: [[None; MAX_PLY]; MAX_PLY],
             pv_length: [0; MAX_PLY],
         }
     }
 
+    /// Start of a new search within a game: keep (decayed) history so move
+    /// ordering does not start from zero on every move, reset per-search state.
+    fn new_search(&mut self) {
+        self.killer_moves = [[None; 2]; MAX_PLY];
+        for row in self.history_table.iter_mut() {
+            for v in row.iter_mut() {
+                *v /= 2;
+            }
+        }
+        self.nodes_searched = 0;
+        self.null_at = [false; MAX_PLY];
+        self.is_helper = false;
+        self.pv_table = [[None; MAX_PLY]; MAX_PLY];
+        self.pv_length = [0; MAX_PLY];
+    }
+
     fn clear(&mut self) {
+        self.null_at = [false; MAX_PLY];
+        self.is_helper = false;
         self.killer_moves = [[None; 2]; MAX_PLY];
         self.history_table = [[0; 64]; 64];
         self.countermove_table = [[None; 64]; 64];
@@ -120,23 +145,17 @@ fn is_passed_pawn_push(board: &BoardState, mv: &Move) -> bool {
     board.pieces[enemy_color][1] & enemy_pawns_ahead == 0
 }
 
-/// Captures and promotions are always included. Quiet checks are included only
-/// for the first two quiescence plies to catch forcing replies without allowing
-/// an unbounded checking-move explosion.
-fn generate_quiescence_moves(board: &BoardState, depth: i8, in_check: bool) -> MoveList {
-    let mut moves = MoveList::new();
-    for mv in MoveGenerator::generate_legal_moves(board) {
-        if in_check || mv.is_capture() || mv.is_promotion() {
-            moves.push(mv);
-        } else if depth >= -1 {
-            let mut child = board.clone();
-            child.make_move(&mv);
-            if child.is_in_check(child.side_to_move) {
-                moves.push(mv);
-            }
-        }
+/// Quiescence move list: all legal evasions when in check, otherwise legal
+/// captures and promotions. (A previous revision also generated every legal
+/// move at the first two quiescence plies and made each one to test for check;
+/// that cost a full legal movegen plus ~35 board copies per leaf for little
+/// tactical gain.)
+fn generate_quiescence_moves(board: &BoardState, in_check: bool) -> MoveList {
+    if in_check {
+        MoveGenerator::generate_legal_moves(board)
+    } else {
+        MoveGenerator::generate_captures(board)
     }
-    moves
 }
 
 impl SearchEngine {
@@ -152,6 +171,7 @@ impl SearchEngine {
             threads,
             nodes: Arc::new(AtomicU64::new(0)),
             stop: Arc::new(AtomicBool::new(false)),
+            helper_stop: Arc::new(AtomicBool::new(false)),
             multi_pv: 1,
             contempt: 20,
             thread_data: Arc::new(thread_data),
@@ -169,14 +189,14 @@ impl SearchEngine {
 
         self.nodes.store(0, Ordering::Relaxed);
         self.stop.store(false, Ordering::Relaxed);
+        self.helper_stop.store(false, Ordering::Relaxed);
         // Advance once per search invocation (UCI go), not once per chess
         // move. This makes entries from recent searches preferred while
         // retaining useful transpositions across consecutive positions.
-        self.tt.write().increment_age();
+        self.tt.read().increment_age();
 
-        // Clear thread data
         for thread_data in self.thread_data.iter() {
-            thread_data.lock().clear();
+            thread_data.lock().new_search();
         }
 
         // A dead position has no legal best move to return.
@@ -222,6 +242,16 @@ impl SearchEngine {
             };
         }
 
+        // A forced move needs no search when the clock is running.
+        if legal_moves.len() == 1 && time_ms.is_some() {
+            return SearchResult {
+                best_move: Some(legal_moves[0]),
+                score: 0,
+                nodes: 0,
+                pv_lines: Vec::new(),
+            };
+        }
+
         // Keep a useful fallback if a very short time limit interrupts the
         // first iteration; the old fallback was just the first generated move.
         let mut best_move = None;
@@ -240,6 +270,7 @@ impl SearchEngine {
         let time_limit = time_ms.map(Duration::from_millis);
         let mut prev_score = 0;
         let pv_lines = Vec::new();
+        let mut last_iter_time = Duration::ZERO;
 
         // Iterative deepening
         for depth in 1..=max_depth {
@@ -249,12 +280,17 @@ impl SearchEngine {
 
             let soft_limit = time_limit.map(|t| t.mul_f64(0.5));
             let hard_limit = time_limit;
+            let iter_start = Instant::now();
 
-            let previous_iteration_score = prev_score;
+            // Search the previous iteration's best move first. Before this the
+            // root hash move was always None, so each iteration re-ordered the root
+            // from scratch and a timeout could discard the whole iteration.
+            let root_hint = if depth > 1 { best_move } else { None };
+
             let (score, mv, pv) = if depth >= 5 {
-                self.search_aspiration(&board, depth, prev_score, start_time, soft_limit, hard_limit)
+                self.search_aspiration(&board, depth, prev_score, root_hint, start_time, soft_limit, hard_limit)
             } else {
-                self.search_root(&board, depth, -INFINITY, INFINITY, start_time, soft_limit, hard_limit)
+                self.search_root(&board, depth, -INFINITY, INFINITY, root_hint, start_time, soft_limit, hard_limit)
             };
 
             // Do not accept results from an interrupted iteration.
@@ -271,6 +307,7 @@ impl SearchEngine {
                 // For mate/stalemate, we must still respect the score
                 best_score = score;
             }
+            last_iter_time = iter_start.elapsed();
 
             let elapsed_ms = start_time.elapsed().as_millis();
             let nodes = self.nodes.load(Ordering::Relaxed);
@@ -296,6 +333,10 @@ impl SearchEngine {
                     elapsed_ms,
                     pv_str.trim()
                 );
+                // A forced mate is found; searching deeper cannot improve it.
+                if depth >= 4 && time_limit.is_some() {
+                    break;
+                }
             } else {
                 println!(
                     "info depth {} score cp {} nodes {} nps {} time {} pv {}",
@@ -303,33 +344,19 @@ impl SearchEngine {
                 );
             }
 
-            // Smart time management: only stop early if score is very stable
-            if let Some(soft) = soft_limit {
-                let elapsed = start_time.elapsed();
-                if elapsed > soft {
-                    let time_ratio = elapsed.as_millis() as f64 / soft.as_millis() as f64;
-                    
-                    // In desperate positions, always keep thinking if time allows
-                    // Only exit early if score is stable AND we've used a lot of time
-                    let score_stable = (previous_iteration_score - score).abs() < 20;
-                    if score < -500 {
-                        // Losing badly: keep searching for a swindle unless almost out of time
-                        if time_ratio > 1.8 {
-                            break;
-                        }
-                    } else if time_ratio > 1.6 && score_stable {
-                        // Score is very stable and we've used plenty of time
-                        break;
-                    }
-                }
-            }
-
+            // Do not start an iteration that cannot finish: an interrupted
+            // iteration is discarded, so its time is wasted. Each iteration costs
+            // roughly 2-3x the previous one; allow 2x as the cut-off estimate.
             if let Some(hard) = hard_limit {
-                if start_time.elapsed() > hard.mul_f64(0.95) {
+                let elapsed = start_time.elapsed();
+                if elapsed + last_iter_time.mul_f64(2.0) > hard {
                     break;
                 }
             }
         }
+
+        // Halt any helper still running and report.
+        self.helper_stop.store(true, Ordering::Relaxed);
 
         SearchResult {
             best_move,
@@ -344,43 +371,40 @@ impl SearchEngine {
         board: &BoardState,
         depth: u8,
         prev_score: i32,
+        root_hint: Option<Move>,
         start_time: Instant,
         soft_limit: Option<Duration>,
         hard_limit: Option<Duration>,
     ) -> (i32, Option<Move>, MoveList) {
-        let mut window = 50;
-        let mut alpha = prev_score - window;
-        let mut beta = prev_score + window;
-        let mut fail_high_count = 0;
-        let mut fail_low_count = 0;
+        let mut window = 40;
+        let mut alpha = (prev_score - window).max(-INFINITY);
+        let mut beta = (prev_score + window).min(INFINITY);
+        let mut fails = 0;
 
         loop {
-            let (score, mv, pv) = self.search_root(board, depth, alpha, beta, start_time, soft_limit, hard_limit);
+            let (score, mv, pv) = self.search_root(board, depth, alpha, beta, root_hint, start_time, soft_limit, hard_limit);
 
             if self.stop.load(Ordering::Relaxed) {
                 return (prev_score, mv, pv);
             }
 
             if score <= alpha {
-                // Fail low
-                fail_low_count += 1;
+                // Fail low: widen downwards, pull beta in toward the window centre.
                 beta = (alpha + beta) / 2;
-                alpha = (alpha - window * (1 + fail_low_count)).max(-INFINITY);
-                println!("info string Fail low, widening window to [{}, {}]", alpha, beta);
+                alpha = (alpha - window).max(-INFINITY);
             } else if score >= beta {
-                // Fail high
-                fail_high_count += 1;
-                beta = (beta + window * (1 + fail_high_count)).min(INFINITY);
-                println!("info string Fail high, widening window to [{}, {}]", alpha, beta);
+                // Fail high: widen upwards.
+                beta = (beta + window).min(INFINITY);
             } else {
                 return (score, mv, pv);
             }
 
+            fails += 1;
             window = (window * 2).min(1000);
 
-            // Emergency exit on extreme fails
-            if fail_high_count + fail_low_count > 5 {
-                return self.search_root(board, depth, -INFINITY, INFINITY, start_time, soft_limit, hard_limit);
+            // After a few failures use the full window instead of creeping.
+            if fails >= 3 {
+                return self.search_root(board, depth, -INFINITY, INFINITY, root_hint, start_time, soft_limit, hard_limit);
             }
         }
     }
@@ -391,11 +415,12 @@ impl SearchEngine {
         depth: u8,
         alpha: i32,
         beta: i32,
+        root_hint: Option<Move>,
         start_time: Instant,
         soft_limit: Option<Duration>,
         hard_limit: Option<Duration>,
     ) -> (i32, Option<Move>, MoveList) {
-        let mut moves = MoveGenerator::generate_legal_moves(board);
+        let moves = MoveGenerator::generate_legal_moves(board);
 
         if moves.is_empty() {
             return if board.is_in_check(board.side_to_move) {
@@ -417,77 +442,39 @@ impl SearchEngine {
             return (score, Some(moves[0]), pv);
         }
 
-        // Order moves using main thread data
-        let mut thread_data = self.thread_data[0].lock();
-        self.order_moves_internal(board, &mut moves, None, 0, &mut thread_data);
-        drop(thread_data);
-
-        let mut best_move = None;
-        let mut best_score = -INFINITY;
-        let mut best_pv = MoveList::new();
-
-        // Lazy SMP: Launch parallel search on multiple threads
-        if self.threads > 1 && depth >= 6 {
-            let results: Vec<_> = (0..self.threads)
-                .into_par_iter()
-                .map(|thread_id| {
-                    if self.stop.load(Ordering::Relaxed) {
-                        return (thread_id, -INFINITY, None, MoveList::new());
-                    }
-
-                    let depth_variation = if thread_id > 0 {
-                        // Helpers contribute shallower TT entries; only thread 0
-                        // performs the full-depth root search used for move selection.
-                        let offset = 1 + ((thread_id - 1) % 3) as u8;
-                        depth.saturating_sub(offset).max(1)
-                    } else {
-                        depth
-                    };
-
-                    let (score, mv, pv) = self.search_root_thread(
-                        board,
-                        depth_variation,
-                        alpha,
-                        beta,
-                        thread_id,
-                        start_time,
-                        soft_limit,
-                        hard_limit,
-                    );
-
-                    (thread_id, score, mv, pv)
-                })
-                .collect();
-
-            // Root scores from different depths are not comparable. Only the
-            // full-depth main thread may choose the move; helpers contribute
-            // shared transposition-table information.
-            for (thread_id, score, mv, pv) in results {
-                if thread_id == 0 {
-                    best_score = score;
-                    best_move = mv;
-                    best_pv = pv;
-                    break;
+        // Lazy SMP: helper threads search the same root with different move
+        // orders and depths so that they fill the shared transposition table
+        // ahead of the main thread. Only thread 0 chooses the move. Helpers are
+        // halted via `helper_stop` as soon as the main thread finishes this
+        // iteration (the old code waited for every helper, and used rayon, which
+        // gives no guarantee that thread 0 even runs first or concurrently).
+        if self.threads > 1 && depth >= 5 {
+            self.helper_stop.store(false, Ordering::Relaxed);
+            let result = std::thread::scope(|scope| {
+                for tid in 1..self.threads {
+                    let helper_depth = depth + (tid as u8 & 1);
+                    scope.spawn(move || {
+                        let _ = self.search_root_thread(
+                            board, helper_depth, alpha, beta, root_hint, tid,
+                            start_time, soft_limit, hard_limit,
+                        );
+                    });
                 }
-            }
+                let r = self.search_root_thread(
+                    board, depth, alpha, beta, root_hint, 0,
+                    start_time, soft_limit, hard_limit,
+                );
+                self.helper_stop.store(true, Ordering::Relaxed);
+                r
+            });
+            self.helper_stop.store(false, Ordering::Relaxed);
+            result
         } else {
-            // Single-threaded search
-            let (score, mv, pv) = self.search_root_thread(
-                board,
-                depth,
-                alpha,
-                beta,
-                0,
-                start_time,
-                soft_limit,
-                hard_limit,
-            );
-            best_score = score;
-            best_move = mv;
-            best_pv = pv;
+            self.search_root_thread(
+                board, depth, alpha, beta, root_hint, 0,
+                start_time, soft_limit, hard_limit,
+            )
         }
-
-        (best_score, best_move, best_pv)
     }
 
     fn search_root_thread(
@@ -496,6 +483,7 @@ impl SearchEngine {
         depth: u8,
         mut alpha: i32,
         beta: i32,
+        root_hint: Option<Move>,
         thread_id: usize,
         start_time: Instant,
         soft_limit: Option<Duration>,
@@ -503,15 +491,26 @@ impl SearchEngine {
     ) -> (i32, Option<Move>, MoveList) {
         let mut moves = MoveGenerator::generate_legal_moves(board);
         let mut thread_data = self.thread_data[thread_id].lock();
-        self.order_moves_internal(board, &mut moves, None, 0, &mut thread_data);
-        
+        thread_data.is_helper = thread_id > 0;
+
+        // TT move as a fallback hint when no previous iteration exists.
+        let hint = root_hint.or_else(|| self.tt.read().probe(board.hash).and_then(|e| e.best_move));
+        self.order_moves_internal(board, &mut moves, hint, 0, &mut thread_data);
+
+        // Helper diversity: promote a different move to the front per thread.
+        if thread_id > 0 && moves.len() > 1 {
+            let k = thread_id % moves.len();
+            let mv = moves.remove(k);
+            moves.insert(0, mv);
+        }
+
         let mut best_move = None;
         let mut best_score = -INFINITY;
         let mut best_pv = MoveList::new();
         let mut move_count = 0;
 
         for mv in moves {
-            if self.check_time_abort(start_time, soft_limit, hard_limit) {
+            if self.check_time_abort(start_time, soft_limit, hard_limit) || self.halted(&thread_data) {
                 break;
             }
 
@@ -524,7 +523,7 @@ impl SearchEngine {
             } else {
                 // PVS: null window search
                 let mut score = -self.pvs(&new_board, depth - 1, -alpha - 1, -alpha, 1, false, thread_id, start_time, soft_limit, hard_limit, &mut thread_data);
-                
+
                 if score > alpha && score < beta {
                     // Re-search with full window
                     score = -self.pvs(&new_board, depth - 1, -beta, -alpha, 1, true, thread_id, start_time, soft_limit, hard_limit, &mut thread_data);
@@ -532,7 +531,7 @@ impl SearchEngine {
                 score
             };
 
-            if self.stop.load(Ordering::Relaxed) {
+            if self.halted(&thread_data) {
                 break;
             }
 
@@ -541,7 +540,7 @@ impl SearchEngine {
             if score > best_score {
                 best_score = score;
                 best_move = Some(mv);
-                
+
                 // Copy PV
                 best_pv.clear();
                 best_pv.push(mv);
@@ -559,8 +558,10 @@ impl SearchEngine {
             }
 
             if score >= beta {
-                self.update_killers_internal(mv, 0, &mut thread_data);
-                self.update_history_internal(mv, depth, &mut thread_data);
+                if !mv.is_capture() {
+                    self.update_killers_internal(mv, 0, &mut thread_data);
+                    self.update_history_internal(mv, depth, &mut thread_data);
+                }
                 break;
             }
         }
@@ -594,7 +595,7 @@ impl SearchEngine {
             return 0;
         }
 
-        if self.stop.load(Ordering::Relaxed) {
+        if self.halted(thread_data) {
             return 0;
         }
 
@@ -607,8 +608,8 @@ impl SearchEngine {
         }
 
         // Draw detection
-        if board.halfmove_clock >= 100 || board.is_repetition() {
-            return -self.contempt;
+        if board.halfmove_clock >= 100 || board.is_repetition_in_search() {
+            return self.draw_score(ply);
         }
 
         // Mate distance pruning
@@ -628,7 +629,7 @@ impl SearchEngine {
 
         // Quiescence at leaf nodes
         if depth == 0 {
-            return self.quiescence(board, alpha, beta_new, 0, thread_data, start_time, hard_limit);
+            return self.quiescence(board, alpha, beta_new, 0, ply, thread_data, start_time, hard_limit);
         }
 
         // TT probe
@@ -647,13 +648,17 @@ impl SearchEngine {
             }
         }
 
-        let (static_eval, side_has_hanging_piece) =
-            Evaluator::evaluate_with_tactical_info(board);
-        let tactical_danger =
-            !pv_node && !in_check && depth <= 7 && side_has_hanging_piece;
+        // NOTE: an earlier revision disabled RFP, null-move, razoring, LMR, LMP,
+        // history pruning and futility whenever the side to move had an attacked,
+        // undefended piece ("tactical_danger"). That condition holds in a large
+        // fraction of ordinary nodes, so it switched selective search off almost
+        // everywhere: ~5x more nodes at equal depth and 2-3 plies lost in the same
+        // time. The static eval already penalises loose pieces and quiescence
+        // resolves captures, so the blanket gate is removed.
+        let static_eval = Evaluator::evaluate(board);
 
         // Reverse futility pruning
-        if !pv_node && !in_check && !tactical_danger && depth <= 7 {
+        if !pv_node && !in_check && depth <= 7 && static_eval.abs() < MATE_SCORE - 1000 {
             let rfp_margin = 90 * depth as i32;
             if static_eval - rfp_margin >= beta_new {
                 return static_eval - rfp_margin;
@@ -661,7 +666,11 @@ impl SearchEngine {
         }
 
         // Null move pruning with verification
-        if !pv_node && !in_check && !tactical_danger && depth >= 3 && board.halfmove_clock < 90 {
+        // No two null moves in a row (the second would just give the move back and
+        // make the line meaningless), and never in pawn/king endings (zugzwang).
+        if !pv_node && !in_check && depth >= 3 && board.halfmove_clock < 90
+            && ply + 1 < MAX_PLY && !thread_data.null_at[ply]
+        {
             let has_pieces = (board.pieces[board.side_to_move as usize][2] 
                 | board.pieces[board.side_to_move as usize][3]
                 | board.pieces[board.side_to_move as usize][4]
@@ -670,11 +679,22 @@ impl SearchEngine {
             if has_pieces && static_eval >= beta_new {
                 let mut null_board = board.clone();
                 null_board.side_to_move = null_board.side_to_move.flip();
+                // Keep the hash consistent: removing the en-passant square must
+                // also remove its Zobrist key (it was left in before).
+                if let Some(ep) = null_board.ep_square {
+                    null_board.hash ^= crate::zobrist::ZOBRIST.ep_keys[(ep % 8) as usize];
+                }
                 null_board.ep_square = None;
                 null_board.hash ^= crate::zobrist::ZOBRIST.side_key;
 
                 let r = 3 + (depth / 4) + ((static_eval - beta_new) / 200).clamp(0, 2) as u8;
+                thread_data.null_at[ply + 1] = true;
                 let score = -self.pvs(&null_board, depth.saturating_sub(r), -beta_new, -beta_new + 1, ply + 1, false, thread_id, start_time, soft_limit, hard_limit, thread_data);
+                thread_data.null_at[ply + 1] = false;
+
+                if self.halted(thread_data) {
+                    return 0;
+                }
 
                 if score >= beta_new {
                     if depth < 12 {
@@ -690,10 +710,10 @@ impl SearchEngine {
         }
 
         // Razoring
-        if depth <= 3 && !in_check && !pv_node && !tactical_danger {
+        if depth <= 3 && !in_check && !pv_node {
             let razor_margin = 350 + 200 * depth as i32;
             if static_eval + razor_margin < alpha {
-                let q_score = self.quiescence(board, alpha, beta_new, 0, thread_data, start_time, hard_limit);
+                let q_score = self.quiescence(board, alpha, beta_new, 0, ply, thread_data, start_time, hard_limit);
                 if q_score < alpha {
                     return q_score.max(alpha - razor_margin);
                 }
@@ -734,7 +754,7 @@ impl SearchEngine {
             }
 
             // Late Move Pruning (LMP) for quiet moves in non-PV nodes
-            if !pv_node && !in_check && !tactical_danger && depth <= 3 && move_count > (3 + 2 * depth as usize) && !mv.is_capture() && !mv.is_promotion() {
+            if !pv_node && !in_check && depth <= 3 && move_count > (3 + 2 * depth as usize) && !mv.is_capture() && !mv.is_promotion() {
                 let h = thread_data.history_table[mv.from as usize][mv.to as usize];
                 if h < 2000 {
                     move_count += 1;
@@ -743,7 +763,7 @@ impl SearchEngine {
             }
 
             // History pruning: skip quiet moves with very bad history at shallow depths
-            if !pv_node && !in_check && !tactical_danger && depth <= 5 && move_count > 3 && !mv.is_capture() && !mv.is_promotion() {
+            if !pv_node && !in_check && depth <= 5 && move_count > 3 && !mv.is_capture() && !mv.is_promotion() {
                 let h = thread_data.history_table[mv.from as usize][mv.to as usize];
                 if h < -(depth as i32 * depth as i32 * 100) {
                     move_count += 1;
@@ -758,7 +778,7 @@ impl SearchEngine {
             // version also pruned PV nodes and used a margin up to 720 cp.
             let futile = !pv_node
                 && !in_check
-                && !tactical_danger
+               
                 && !new_board.is_in_check(new_board.side_to_move)
                 && !mv.is_capture()
                 && !mv.is_promotion()
@@ -786,7 +806,7 @@ impl SearchEngine {
                 -self.pvs(&new_board, depth.saturating_sub(1).saturating_add(extension), -beta_new, -alpha, ply + 1, pv_node, thread_id, start_time, soft_limit, hard_limit, thread_data)
             } else {
                 // Late move reductions
-                let reduction = if move_count >= 3 && depth >= 3 && !in_check && !tactical_danger && !gives_check && !mv.is_capture() && !mv.is_promotion() {
+                let reduction = if move_count >= 3 && depth >= 3 && !in_check && !gives_check && !mv.is_capture() && !mv.is_promotion() {
                     let base = LMR_TABLE[depth.min(63) as usize][move_count.min(63)];
                     let mut r = base;
 
@@ -832,7 +852,7 @@ impl SearchEngine {
                 score
             };
 
-            if self.stop.load(Ordering::Relaxed) {
+            if self.halted(thread_data) {
                 return 0;
             }
 
@@ -874,8 +894,8 @@ impl SearchEngine {
 
                 // Reduce TT traffic: only store reasonably deep entries
                 if depth >= 2 || ply == 0 {
-                    if !self.stop.load(Ordering::Relaxed) {
-                        self.tt.write().store(
+                    if !self.halted(thread_data) {
+                        self.tt.read().store(
                             board.hash,
                             depth,
                             score_to_tt(beta_new, ply),
@@ -892,7 +912,7 @@ impl SearchEngine {
             }
         }
 
-        if self.stop.load(Ordering::Relaxed) {
+        if self.halted(thread_data) {
             return 0;
         }
 
@@ -904,7 +924,7 @@ impl SearchEngine {
 
         // Reduce TT traffic for shallow nodes
         if depth >= 2 || ply == 0 {
-            self.tt.write().store(
+            self.tt.read().store(
                 board.hash,
                 depth,
                 score_to_tt(best_score, ply),
@@ -921,19 +941,18 @@ impl SearchEngine {
         mut alpha: i32,
         beta: i32,
         depth: i8,
+        ply: usize,
         thread_data: &mut ThreadData,
         start_time: Instant,
         hard_limit: Option<Duration>,
     ) -> i32 {
-        // Quiescence shares the same thread-local counter and periodic clock
-        // checks as the principal search.
         if self.record_search_node(thread_data)
             && self.check_time_abort(start_time, None, hard_limit)
         {
             return 0;
         }
 
-        if self.stop.load(Ordering::Relaxed) {
+        if self.halted(thread_data) {
             return 0;
         }
 
@@ -942,9 +961,13 @@ impl SearchEngine {
         }
 
         let in_check = board.is_in_check(board.side_to_move);
-        if depth < -16 && !in_check {
+        if (depth < -16 || ply >= MAX_PLY - 1) && !in_check {
             return Evaluator::evaluate(board);
         }
+        if ply >= MAX_PLY - 1 {
+            return Evaluator::evaluate(board);
+        }
+
         let stand_pat = if in_check {
             -INFINITY
         } else {
@@ -955,41 +978,54 @@ impl SearchEngine {
             if stand_pat >= beta {
                 return beta;
             }
-
-            // A single queen capture is worth 900 cp, and a capture-promotion
-            // can gain substantially more. Keep the delta margin above those
-            // tactical gains so a losing static evaluation cannot prune them.
-            if stand_pat + 1800 < alpha {
-                return alpha;
-            }
-
             if stand_pat > alpha {
                 alpha = stand_pat;
             }
         }
 
-        // Captures plus all promotions, including quiet promotions.
-        let mut moves = generate_quiescence_moves(board, depth, in_check);
+        let moves = generate_quiescence_moves(board, in_check);
 
         if moves.is_empty() {
             if in_check {
-                return -MATE_SCORE;
+                // Checkmate: score relative to the distance from the root so the
+                // shortest mate is preferred (this used to return a flat -MATE_SCORE).
+                return -MATE_SCORE + ply as i32;
             }
-
-            // Stalemate cannot be detected from the capture list alone.
-            if MoveGenerator::generate_legal_moves(board).is_empty() {
-                return -self.contempt;
-            }
-
+            // No captures: the position is quiet. (Stalemate is not detected here;
+            // the old code ran a full legal move generation at every quiet leaf
+            // just to look for it, which was the single most expensive thing in
+            // quiescence. Stalemate is found by the main search.)
             return stand_pat;
         }
 
-        self.order_captures_internal(board, &mut moves);
-
+        // Score once (MVV-LVA, SEE computed a single time per move).
+        let mut scored: SmallVec<[(i32, bool, Move); 64]> = SmallVec::new();
         for mv in moves {
-            // Promotion material gain is handled explicitly by SEE, but don't
-            // prune promotions at the horizon on a static exchange threshold.
-            if !in_check && mv.is_capture() && !mv.is_promotion() && !self.see_capture(board, &mv, 0) {
+            let victim_value = if mv.flags == crate::movegen::EP_CAPTURE {
+                PIECE_VALUES[1]
+            } else {
+                board.piece_at(mv.to).map_or(0, |(p, _)| PIECE_VALUES[p as usize])
+            };
+            let promo_gain = if mv.is_promotion() { PIECE_VALUES[5] - PIECE_VALUES[1] } else { 0 };
+
+            // Delta pruning: even winning the victim (plus any promotion gain)
+            // with a safety margin cannot reach alpha.
+            if !in_check && stand_pat + victim_value + promo_gain + 200 <= alpha {
+                continue;
+            }
+
+            let see_ok = if in_check || !mv.is_capture() || mv.is_promotion() {
+                true
+            } else {
+                self.see_capture(board, &mv, 0)
+            };
+            let key = self.mvv_lva_score(board, &mv) + if see_ok { 100_000 } else { 0 } + promo_gain;
+            scored.push((key, see_ok, mv));
+        }
+        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+        for (_, see_ok, mv) in scored {
+            if !see_ok {
                 continue;
             }
 
@@ -1001,12 +1037,13 @@ impl SearchEngine {
                 -beta,
                 -alpha,
                 depth - 1,
+                ply + 1,
                 thread_data,
                 start_time,
                 hard_limit,
             );
 
-            if self.stop.load(Ordering::Relaxed) {
+            if self.halted(thread_data) {
                 return 0;
             }
 
@@ -1027,12 +1064,16 @@ fn order_moves_internal(&self, board: &BoardState, moves: &mut MoveList, tt_move
         let killers = thread_data.killer_moves[ply];
         let history = &thread_data.history_table;
 
-        // Use comparator-based unstable sort to avoid key allocations and negation.
-        moves.sort_unstable_by(|a, b| {
-            let sa = self.score_move_internal(board, a, tt_move, &killers, history);
-            let sb = self.score_move_internal(board, b, tt_move, &killers, history);
-            sb.cmp(&sa)
-        });
+        // Score every move exactly once. The previous comparator-based sort
+        // recomputed the score (including a static exchange evaluation for each
+        // capture) on every comparison, O(n log n) SEE calls per node.
+        let mut scored: SmallVec<[(i32, Move); 128]> = moves
+            .iter()
+            .map(|m| (self.score_move_internal(board, m, tt_move, &killers, history), *m))
+            .collect();
+        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        moves.clear();
+        moves.extend(scored.into_iter().map(|(_, m)| m));
     }
 
     #[inline(always)]
@@ -1193,6 +1234,24 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
         }
     }
 
+    /// Score of a drawn position for the side to move at `ply`. Contempt is
+    /// applied relative to the root side: the engine (even plies) dislikes
+    /// draws, the opponent (odd plies) is assumed to like them. The previous
+    /// code returned `-contempt` for both sides, which is not a consistent
+    /// minimax value.
+    #[inline(always)]
+    fn draw_score(&self, ply: usize) -> i32 {
+        if ply % 2 == 0 { -self.contempt } else { self.contempt }
+    }
+
+    /// True if this thread must stop: global stop, or (for helper threads)
+    /// the main thread has finished the current iteration.
+    #[inline(always)]
+    fn halted(&self, td: &ThreadData) -> bool {
+        self.stop.load(Ordering::Relaxed)
+            || (td.is_helper && self.helper_stop.load(Ordering::Relaxed))
+    }
+
     #[inline(always)]
     fn check_time_abort(&self, start_time: Instant, _soft_limit: Option<Duration>, hard_limit: Option<Duration>) -> bool {
         if self.stop.load(Ordering::Relaxed) {
@@ -1296,80 +1355,138 @@ struct TTEntry {
     age: u8,
 }
 
+const TT_NO_MOVE: u64 = 0xFFFF;
+
+#[inline(always)]
+fn pack_move(mv: Option<Move>) -> u64 {
+    match mv {
+        Some(m) => (m.from as u64 & 63) | ((m.to as u64 & 63) << 6) | ((m.flags as u64 & 15) << 12),
+        None => TT_NO_MOVE,
+    }
+}
+
+#[inline(always)]
+fn unpack_move(bits: u64) -> Option<Move> {
+    if bits == TT_NO_MOVE {
+        None
+    } else {
+        Some(Move::new((bits & 63) as u8, ((bits >> 6) & 63) as u8, ((bits >> 12) & 15) as u8))
+    }
+}
+
+/// Lock-free transposition table. Each slot is two atomic words: the data word
+/// and `key ^ data`. A torn read (another thread wrote between our two loads)
+/// fails the XOR check and is treated as a miss, so probes and stores never
+/// need a lock. The old design took a global write lock on every store, which
+/// serialised all search threads.
 pub struct TranspositionTable {
-    table: Vec<Option<TTEntry>>,
-    size: usize,
-    current_age: u8,
+    table: Vec<AtomicU64>, // 2 words per slot: [key ^ data, data]
+    size: usize,           // number of slots
+    current_age: AtomicU8,
 }
 
 impl TranspositionTable {
+    fn alloc(size: usize) -> Vec<AtomicU64> {
+        // vec![0; n] uses calloc (lazy zero pages), so a large table is cheap
+        // to create. AtomicU64 has the same layout as u64.
+        let mut v = std::mem::ManuallyDrop::new(vec![0u64; size * 2]);
+        unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut AtomicU64, v.len(), v.capacity()) }
+    }
+
     fn new(size_mb: usize) -> Self {
-        let size = (size_mb * 1024 * 1024) / std::mem::size_of::<Option<TTEntry>>();
+        let size = ((size_mb.max(1) * 1024 * 1024) / 16).max(1);
         TranspositionTable {
-            table: vec![None; size],
+            table: Self::alloc(size),
             size,
-            current_age: 0,
+            current_age: AtomicU8::new(0),
+        }
+    }
+
+    #[inline(always)]
+    fn age_bits(&self) -> u8 {
+        self.current_age.load(Ordering::Relaxed) & 63
+    }
+
+    #[inline(always)]
+    fn decode(hash: u64, data: u64) -> TTEntry {
+        TTEntry {
+            hash,
+            score: data as u32 as i32,
+            depth: ((data >> 32) & 0xFF) as u8,
+            flag: ((data >> 40) & 3) as u8,
+            age: ((data >> 42) & 63) as u8,
+            best_move: unpack_move(data >> 48),
         }
     }
 
     fn probe(&self, hash: u64) -> Option<TTEntry> {
-        let index = (hash as usize) % self.size;
-        if let Some(entry) = &self.table[index] {
-            if entry.hash == hash {
-                return Some(entry.clone());
-            }
+        let index = ((hash as usize) % self.size) * 2;
+        let data = self.table[index + 1].load(Ordering::Relaxed);
+        let key = self.table[index].load(Ordering::Relaxed);
+        if data == 0 && key == 0 {
+            return None;
         }
-        None
+        if key ^ data == hash {
+            Some(Self::decode(hash, data))
+        } else {
+            None
+        }
     }
 
-    fn store(&mut self, hash: u64, depth: u8, score: i32, flag: u8, best_move: Option<Move>) {
-        let index = (hash as usize) % self.size;
+    fn store(&self, hash: u64, depth: u8, score: i32, flag: u8, best_move: Option<Move>) {
+        let index = ((hash as usize) % self.size) * 2;
+        let old_data = self.table[index + 1].load(Ordering::Relaxed);
+        let old_key = self.table[index].load(Ordering::Relaxed);
+        let cur_age = self.age_bits();
+        let mut best_move = best_move;
 
-        // Replacement strategy
-        let should_replace = if let Some(entry) = &self.table[index] {
-            if entry.hash == hash {
-                // Do not let a shallower helper search overwrite a deeper
-                // result for the same position. At equal depth, prefer exact
-                // information over a bound.
-                depth > entry.depth
-                    || (depth == entry.depth && flag == TT_EXACT && entry.flag != TT_EXACT)
+        if !(old_data == 0 && old_key == 0) {
+            let old_hash = old_key ^ old_data;
+            let old = Self::decode(old_hash, old_data);
+            let age_diff = cur_age.wrapping_sub(old.age) & 63;
+            let replace = if old_hash == hash {
+                // Same position: keep the old move if we have none, and do not
+                // let a much shallower bound clobber a deeper result.
+                if best_move.is_none() {
+                    best_move = old.best_move;
+                }
+                age_diff > 0 || flag == TT_EXACT || depth + 2 >= old.depth
             } else {
-                // Replace based on depth and age.
-                let depth_diff = depth as i32 - entry.depth as i32;
-                let age_diff = self.current_age.wrapping_sub(entry.age);
-
-                depth_diff >= 3 || age_diff >= 4 || (depth_diff >= 0 && age_diff >= 2)
+                // Collision: a stale entry always goes; otherwise only replace
+                // when we are not much shallower than what is stored.
+                age_diff > 0 || depth + 3 >= old.depth
+            };
+            if !replace {
+                return;
             }
-        } else {
-            true
-        };
-
-        if should_replace {
-            self.table[index] = Some(TTEntry {
-                hash,
-                depth,
-                score,
-                flag,
-                best_move,
-                age: self.current_age,
-            });
         }
+
+        let data = (score as u32 as u64)
+            | ((depth as u64) << 32)
+            | (((flag & 3) as u64) << 40)
+            | ((cur_age as u64) << 42)
+            | (pack_move(best_move) << 48);
+        self.table[index + 1].store(data, Ordering::Relaxed);
+        self.table[index].store(data ^ hash, Ordering::Relaxed);
     }
 
     fn clear(&mut self) {
-        self.table = vec![None; self.size];
-        self.current_age = 0;
+        for slot in self.table.iter() {
+            slot.store(0, Ordering::Relaxed);
+        }
+        self.current_age.store(0, Ordering::Relaxed);
     }
 
     fn resize(&mut self, size_mb: usize) {
-        self.size = (size_mb * 1024 * 1024) / std::mem::size_of::<Option<TTEntry>>();
-        self.table = vec![None; self.size];
-        self.current_age = 0;
+        self.size = ((size_mb.max(1) * 1024 * 1024) / 16).max(1);
+        self.table = Self::alloc(self.size);
+        self.current_age.store(0, Ordering::Relaxed);
     }
 
     #[allow(dead_code)]
-    fn increment_age(&mut self) {
-        self.current_age = self.current_age.wrapping_add(1);
+    fn increment_age(&self) {
+        let a = self.current_age.load(Ordering::Relaxed);
+        self.current_age.store(a.wrapping_add(1), Ordering::Relaxed);
     }
 }
 
@@ -1486,7 +1603,7 @@ mod tests {
 
         let entry = tt.probe(colliding_hash).expect("new generation entry should replace stale collision");
         assert_eq!(entry.best_move, Some(replacement_move));
-        assert_eq!(entry.age, tt.current_age);
+        assert_eq!(entry.age, tt.age_bits());
         assert!(tt.probe(first_hash).is_none());
     }
 
@@ -1675,14 +1792,39 @@ mod search_regression_tests {
     }
 
     #[test]
-    fn quiescence_includes_shallow_quiet_checks_but_bounds_them() {
-        let board =
-            BoardState::from_fen("r3k3/8/8/8/2N5/8/8/4K3 w - - 0 1").unwrap();
+    fn quiescence_generates_captures_only_unless_in_check() {
+        // Knight can check (c4-d6) or capture nothing; quiet checks are not
+        // searched in quiescence, evasions are.
+        let board = BoardState::from_fen("r3k3/8/8/8/2N5/8/8/4K3 w - - 0 1").unwrap();
+        let moves = generate_quiescence_moves(&board, false);
+        assert!(moves.is_empty());
 
-        let shallow = generate_quiescence_moves(&board, 0, false);
-        assert!(shallow.iter().any(|mv| mv.to_uci() == "c4d6"));
+        let in_check = BoardState::from_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1").unwrap();
+        let evasions = generate_quiescence_moves(&in_check, true);
+        assert!(!evasions.is_empty());
+    }
 
-        let deeper = generate_quiescence_moves(&board, -2, false);
-        assert!(!deeper.iter().any(|mv| mv.to_uci() == "c4d6"));
+    #[test]
+    fn loose_pieces_do_not_switch_off_selective_search() {
+        // Regression test for the `tactical_danger` gate that disabled all pruning
+        // in common middlegame nodes (about 5x more nodes at equal depth).
+        let board = BoardState::from_fen(
+            "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2QK2R w KQ - 0 9",
+        )
+        .unwrap();
+        let engine = SearchEngine::new(1);
+        let result = engine.search(board, 7, None);
+        assert!(result.best_move.is_some());
+        assert!(result.nodes < 400_000, "search is far too wide: {} nodes", result.nodes);
+    }
+
+    #[test]
+    fn repetition_in_search_detects_first_repeat() {
+        let mut b = BoardState::default();
+        for uci in ["g1f3", "g8f6", "f3g1", "f6g8"] {
+            assert!(b.make_move_uci(uci).is_ok());
+        }
+        assert!(b.is_repetition_in_search());
+        assert!(!b.is_repetition());
     }
 }

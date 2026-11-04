@@ -203,15 +203,17 @@ impl Evaluator {
         eprintln!("pawn_structure   {}", Self::pawn_structure(board, phase));
         eprintln!("passed_pawns     {}", Self::passed_pawn_evaluation(board, phase));
         eprintln!("pawn_chains      {}", Self::pawn_chains(board, phase));
-        eprintln!("mobility         {}", Self::piece_mobility_safe(board, phase));
+        let wa = build_attack_map(board, 0, &ATTACK_TABLES);
+        let ba = build_attack_map(board, 1, &ATTACK_TABLES);
+        eprintln!("mobility         {}", Self::piece_mobility_safe(board, phase, wa, ba));
         eprintln!("king_safety      {}", Self::king_safety_advanced(board, phase));
-        eprintln!("space            {}", Self::space_evaluation(board, phase));
+        eprintln!("space            {}", Self::space_evaluation(board, phase, wa, ba));
         eprintln!("rook             {}", Self::rook_evaluation(board));
         eprintln!("bishop           {}", Self::bishop_evaluation(board));
         eprintln!("knight           {}", Self::knight_evaluation(board));
         eprintln!("tempo            {}", Self::tempo_bonus(board));
-        eprintln!("connectivity     {}", Self::piece_connectivity(board, phase));
-        eprintln!("hanging_pieces   {}", Self::hanging_piece_evaluation(board).0);
+        eprintln!("connectivity     {}", Self::piece_connectivity(board, phase, wa, ba));
+        eprintln!("hanging_pieces   {}", Self::hanging_piece_evaluation(board, wa, ba).0);
     }
 
     pub fn evaluate(board: &BoardState) -> i32 {
@@ -236,16 +238,19 @@ impl Evaluator {
         
         // Positional evaluation
         score += Self::pawn_structure(board, phase);
-        score += Self::piece_mobility_safe(board, phase);
+        // Attack maps are used by four terms; build them once per evaluation.
+        let white_attacks = build_attack_map(board, 0, &ATTACK_TABLES);
+        let black_attacks = build_attack_map(board, 1, &ATTACK_TABLES);
+        score += Self::piece_mobility_safe(board, phase, white_attacks, black_attacks);
         score += Self::king_safety_advanced(board, phase);
-        score += Self::space_evaluation(board, phase);
+        score += Self::space_evaluation(board, phase, white_attacks, black_attacks);
         score += Self::rook_evaluation(board);
         score += Self::bishop_evaluation(board);
         score += Self::knight_evaluation(board);
         score += Self::tempo_bonus(board);
-        score += Self::piece_connectivity(board, phase);
+        score += Self::piece_connectivity(board, phase, white_attacks, black_attacks);
         let (hanging_score, side_to_move_has_hanging_piece) =
-            Self::hanging_piece_evaluation(board);
+            Self::hanging_piece_evaluation(board, white_attacks, black_attacks);
         score += hanging_score;
 
         // Return from side-to-move perspective, while preserving the tactical
@@ -272,9 +277,11 @@ impl Evaluator {
     /// Fractional, side-to-move-aware penalty for immediately capturable
     /// undefended pieces. SEE is a tactical approximation, not a legal-move
     /// proof, so this deliberately contributes only part of the estimated gain.
-    fn hanging_piece_evaluation(board: &BoardState) -> (i32, bool) {
-        let white_attacks = build_attack_map(board, Color::White as usize, &ATTACK_TABLES);
-        let black_attacks = build_attack_map(board, Color::Black as usize, &ATTACK_TABLES);
+    fn hanging_piece_evaluation(
+        board: &BoardState,
+        white_attacks: Bitboard,
+        black_attacks: Bitboard,
+    ) -> (i32, bool) {
         let white_risk = Self::hanging_piece_risk(
             board, Color::White as usize, black_attacks, white_attacks,
         );
@@ -1251,14 +1258,10 @@ impl Evaluator {
     // SAFE MOBILITY (ONLY COUNT SAFE SQUARES)
     // ══════════════════════════════════════════════════════════════════════════════
     
-    fn piece_mobility_safe(board: &BoardState, phase: i32) -> i32 {
+    fn piece_mobility_safe(board: &BoardState, phase: i32, white_attacks: Bitboard, black_attacks: Bitboard) -> i32 {
         let mut white_mobility = 0;
         let mut black_mobility = 0;
         let tables = &ATTACK_TABLES;
-
-        // Build enemy attack maps
-        let white_attacks = build_attack_map(board, 0, tables);
-        let black_attacks = build_attack_map(board, 1, tables);
 
         // Knights - safe mobility
         let mut knights = board.pieces[0][Piece::Knight as usize];
@@ -1354,7 +1357,7 @@ impl Evaluator {
     // SPACE EVALUATION
     // ══════════════════════════════════════════════════════════════════════════════
     
-    fn space_evaluation(board: &BoardState, phase: i32) -> i32 {
+    fn space_evaluation(board: &BoardState, phase: i32, white_control: Bitboard, black_control: Bitboard) -> i32 {
         // Space matters more in middlegame
         if phase < 12 {
             return 0;
@@ -1363,9 +1366,6 @@ impl Evaluator {
         // Define center and extended center
         const CENTER: Bitboard = 0x0000001818000000; // e4,d4,e5,d5
         const EXTENDED_CENTER: Bitboard = 0x00003C3C3C3C0000; // Ranks 3-6, files c-f
-        
-        let white_control = build_attack_map(board, 0, &ATTACK_TABLES);
-        let black_control = build_attack_map(board, 1, &ATTACK_TABLES);
         
         let white_center = count_bits(white_control & CENTER) as i32;
         let black_center = count_bits(black_control & CENTER) as i32;
@@ -1514,10 +1514,7 @@ impl Evaluator {
     // PIECE CONNECTIVITY (pieces protecting each other)
     // ══════════════════════════════════════════════════════════════════════════════
     
-    fn piece_connectivity(board: &BoardState, phase: i32) -> i32 {
-        let tables = &ATTACK_TABLES;
-        let white_attacks = build_attack_map(board, 0, tables);
-        let black_attacks = build_attack_map(board, 1, tables);
+    fn piece_connectivity(board: &BoardState, phase: i32, white_attacks: Bitboard, black_attacks: Bitboard) -> i32 {
         
         let mut score = 0;
         
@@ -1637,8 +1634,8 @@ mod evaluation_regression_tests {
 
         assert!(Evaluator::has_unprotected_attacked_piece(&hanging, Color::White));
         assert!(!Evaluator::has_unprotected_attacked_piece(&safe, Color::White));
-        assert!(Evaluator::hanging_piece_evaluation(&hanging).0 < 0);
-        assert_eq!(Evaluator::hanging_piece_evaluation(&safe).0, 0);
+        assert!(Evaluator::hanging_piece_evaluation(&hanging, build_attack_map(&hanging,0,&ATTACK_TABLES), build_attack_map(&hanging,1,&ATTACK_TABLES)).0 < 0);
+        assert_eq!(Evaluator::hanging_piece_evaluation(&safe, build_attack_map(&safe,0,&ATTACK_TABLES), build_attack_map(&safe,1,&ATTACK_TABLES)).0, 0);
         assert!(Evaluator::evaluate_with_tactical_info(&hanging).1);
         assert!(!Evaluator::evaluate_with_tactical_info(&safe).1);
     }
