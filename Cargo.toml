@@ -19,6 +19,10 @@ path = "src/lichess_main.rs"
 name = "sf_match"
 path = "src/sf_match.rs"
 
+[[bin]]
+name = "blunder_scan"
+path = "src/blunder_scan.rs"
+
 [dependencies]
 smallvec = "1.11"
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }

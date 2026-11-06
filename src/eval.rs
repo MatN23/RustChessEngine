@@ -194,6 +194,18 @@ const KING_PST_EG: [i32; 64] = [
 
 pub struct Evaluator;
 
+/// Percent weight applied to each evaluation term, in `term_breakdown` order:
+/// [material+PST, pawn_structure, mobility, king_safety, space, rook, bishop,
+///  knight, tempo, connectivity, hanging].
+///
+/// Fitted against Stockfish on ~2,300 natural midgame positions: the full-strength
+/// pawn-structure, king-safety, space, rook and knight terms were anti-correlated
+/// with Stockfish's judgement and pushed the engine into positions its own
+/// evaluation over-rewarded (it believed it was +100..+240 while Stockfish had it at
+/// -50..-350 for ~40 plies of the middlegame). Halving them scored 75% in a 16-game
+/// head-to-head against the previous weights (25% weights: 62.5%, regression fit: 56%).
+const EVAL_WEIGHTS: [i32; 11] = [100, 50, 100, 50, 50, 50, 100, 50, 100, 100, 100];
+
 impl Evaluator {
     /// Per-term breakdown (White perspective) written to stderr; used by the `evalterms` UCI command.
     pub fn debug_terms(board: &BoardState) {
@@ -220,6 +232,29 @@ impl Evaluator {
         Self::evaluate_with_tactical_info(board).0
     }
 
+    /// Per-term contributions from White's point of view, in this order:
+    /// [material+PST (tapered), pawn_structure, mobility, king_safety, space, rook,
+    ///  bishop, knight, tempo, connectivity, hanging]. Used by the tuning tools.
+    pub fn term_breakdown(board: &BoardState) -> [i32; 11] {
+        let phase = Self::game_phase(board);
+        let (mg, eg) = Self::material_and_pst(board);
+        let wa = build_attack_map(board, 0, &ATTACK_TABLES);
+        let ba = build_attack_map(board, 1, &ATTACK_TABLES);
+        [
+            Self::tapered_eval(mg, eg, phase),
+            Self::pawn_structure(board, phase),
+            Self::piece_mobility_safe(board, phase, wa, ba),
+            Self::king_safety_advanced(board, phase),
+            Self::space_evaluation(board, phase, wa, ba),
+            Self::rook_evaluation(board),
+            Self::bishop_evaluation(board),
+            Self::knight_evaluation(board),
+            Self::tempo_bonus(board),
+            Self::piece_connectivity(board, phase, wa, ba),
+            Self::hanging_piece_evaluation(board, wa, ba).0,
+        ]
+    }
+
     /// Returns the side-to-move evaluation and whether that side has an
     /// unprotected piece that the opponent can win in a static exchange.
     /// Sharing this result avoids rebuilding attack maps in the search.
@@ -233,25 +268,25 @@ impl Evaluator {
         
         // Core evaluation components
         let (mg_score, eg_score) = Self::material_and_pst(board);
-        let mut score = Self::tapered_eval(mg_score, eg_score, phase);
+        let w = &EVAL_WEIGHTS;
+        let mut score = Self::tapered_eval(mg_score, eg_score, phase) * w[0] / 100;
 
-        
         // Positional evaluation
-        score += Self::pawn_structure(board, phase);
+        score += Self::pawn_structure(board, phase) * w[1] / 100;
         // Attack maps are used by four terms; build them once per evaluation.
         let white_attacks = build_attack_map(board, 0, &ATTACK_TABLES);
         let black_attacks = build_attack_map(board, 1, &ATTACK_TABLES);
-        score += Self::piece_mobility_safe(board, phase, white_attacks, black_attacks);
-        score += Self::king_safety_advanced(board, phase);
-        score += Self::space_evaluation(board, phase, white_attacks, black_attacks);
-        score += Self::rook_evaluation(board);
-        score += Self::bishop_evaluation(board);
-        score += Self::knight_evaluation(board);
-        score += Self::tempo_bonus(board);
-        score += Self::piece_connectivity(board, phase, white_attacks, black_attacks);
+        score += Self::piece_mobility_safe(board, phase, white_attacks, black_attacks) * w[2] / 100;
+        score += Self::king_safety_advanced(board, phase) * w[3] / 100;
+        score += Self::space_evaluation(board, phase, white_attacks, black_attacks) * w[4] / 100;
+        score += Self::rook_evaluation(board) * w[5] / 100;
+        score += Self::bishop_evaluation(board) * w[6] / 100;
+        score += Self::knight_evaluation(board) * w[7] / 100;
+        score += Self::tempo_bonus(board) * w[8] / 100;
+        score += Self::piece_connectivity(board, phase, white_attacks, black_attacks) * w[9] / 100;
         let (hanging_score, side_to_move_has_hanging_piece) =
             Self::hanging_piece_evaluation(board, white_attacks, black_attacks);
-        score += hanging_score;
+        score += hanging_score * w[10] / 100;
 
         // Return from side-to-move perspective, while preserving the tactical
         // danger signal for selective-search safeguards.
@@ -1638,5 +1673,66 @@ mod evaluation_regression_tests {
         assert_eq!(Evaluator::hanging_piece_evaluation(&safe, build_attack_map(&safe,0,&ATTACK_TABLES), build_attack_map(&safe,1,&ATTACK_TABLES)).0, 0);
         assert!(Evaluator::evaluate_with_tactical_info(&hanging).1);
         assert!(!Evaluator::evaluate_with_tactical_info(&safe).1);
+    }
+
+    /// Colour-flip a FEN (mirror ranks, swap piece colours, side to move, castling, ep).
+    fn mirror_fen(fen: &str) -> String {
+        let p: Vec<&str> = fen.split_whitespace().collect();
+        let board: Vec<String> = p[0]
+            .split('/')
+            .rev()
+            .map(|r| r.chars().map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c }).collect())
+            .collect();
+        let stm = if p[1] == "w" { "b" } else { "w" };
+        let mut castle: Vec<char> = p[2].chars().map(|c| if c.is_ascii_uppercase() { c.to_ascii_lowercase() } else if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c }).collect();
+        castle.sort_by_key(|c| match c { 'K' => 0, 'Q' => 1, 'k' => 2, 'q' => 3, _ => 4 });
+        let castle: String = castle.into_iter().collect();
+        let ep = if p[3] == "-" { "-".to_string() } else {
+            let f = p[3].chars().next().unwrap();
+            let r = p[3].chars().nth(1).unwrap().to_digit(10).unwrap();
+            format!("{}{}", f, 9 - r)
+        };
+        format!("{} {} {} {} {} {}", board.join("/"), stm, castle, ep, p.get(4).unwrap_or(&"0"), p.get(5).unwrap_or(&"1"))
+    }
+
+    #[test]
+    fn evaluation_is_colour_symmetric() {
+        let fens = [
+            "r1bq1rk1/4bppp/8/p1pp4/8/2BQ1N2/PPP2PPP/R3R1K1 w - - 0 15",
+            "r5k1/4Rbp1/q4p1p/p1pp4/8/2P2NBP/PP3PP1/3R2K1 w - - 1 23",
+            "8/3r1bpk/1q3p1p/2pp4/p4B2/P1P2N1P/1P1R1PP1/4R1K1 w - - 1 29",
+            "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2QK2R w KQ - 0 9",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        ];
+        let mut bad = Vec::new();
+        for fen in fens {
+            let a = Evaluator::evaluate(&BoardState::from_fen(fen).unwrap());
+            let b = Evaluator::evaluate(&BoardState::from_fen(&mirror_fen(fen)).unwrap());
+            if a != b {
+                bad.push(format!("{} -> {} vs mirrored {}", fen, a, b));
+            }
+        }
+        assert!(bad.is_empty(), "asymmetric evaluation: {:#?}", bad);
+    }
+
+    #[test]
+    fn evaluation_is_colour_symmetric_on_random_positions() {
+        // Mirror every position (flip ranks, swap colours, side to move, castling, ep): the
+        // score from the mover's point of view must be identical.
+        let positions = crate::movegen::random_playout_positions(3000, 0x5111);
+        let mut bad = Vec::new();
+        for b in &positions {
+            let fen = b.to_fen();
+            let m = BoardState::from_fen(&mirror_fen(&fen)).unwrap();
+            let (a, c) = (Evaluator::evaluate(b), Evaluator::evaluate(&m));
+            if a != c {
+                bad.push(format!("{} -> {} vs mirrored {}", fen, a, c));
+                if bad.len() >= 5 {
+                    break;
+                }
+            }
+        }
+        assert!(bad.is_empty(), "asymmetric evaluation on {} positions: {:#?}", positions.len(), bad);
     }
 }

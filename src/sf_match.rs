@@ -52,7 +52,7 @@ impl Uci {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("cannot start stockfish");
+            .expect("cannot start opponent engine");
         let stdin = child.stdin.take().unwrap();
         let out = BufReader::new(child.stdout.take().unwrap());
         Uci { child, stdin, out }
@@ -125,33 +125,50 @@ fn main() {
     }
     let level: usize = a[1].parse().unwrap();
     let think_ms: u64 = a[2].parse().unwrap();
-    let games: usize = a[3].parse().unwrap();
+    let mut games: usize = a[3].parse().unwrap();
+    // Colours must be balanced: every opening is played once with each colour.
+    if games % 2 == 1 {
+        games += 1;
+        println!("note: odd game count rounded up to {} so both colours are tested equally", games);
+    }
+    // Adjudication is configurable and can be disabled (SF_NO_ADJ=1) for unbiased results.
+    let adj_cp: i32 = std::env::var("SF_ADJ_CP").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+    let adj_plies: i32 = std::env::var("SF_ADJ_PLIES").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let no_adj = std::env::var("SF_NO_ADJ").is_ok();
     let sf_path = a.get(4).cloned().unwrap_or("/usr/games/stockfish".into());
     let threads: usize = a.get(5).and_then(|v| v.parse().ok()).unwrap_or(1);
     let hash_mb: usize = a.get(6).and_then(|v| v.parse().ok()).unwrap_or(512);
-    let skill = SKILL[level - 1].max(0);
-    let depth = DEPTH[level - 1];
-    let sf_ms = MOVETIME[level - 1];
+    let versus_engine = level == 0; // level 0: opponent is another UCI engine (e.g. chess_uci build)
+    let skill = if versus_engine { 0 } else { SKILL[level - 1].max(0) };
+    let depth = if versus_engine { 64 } else { DEPTH[level - 1] };
+    let sf_ms = if versus_engine { think_ms } else { MOVETIME[level - 1] };
 
     println!(
         "Lichess AI level {} => Skill {} depth {} movetime {}ms | engine: {} thread(s), {}MB hash, {}ms/move",
         level, skill, depth, sf_ms, threads, hash_mb, think_ms
     );
 
-    let mut sf = Uci::spawn(&sf_path);
-    sf.setup(&[("Threads", "1".into()), ("Hash", "64".into()), ("Skill Level", skill.to_string())]);
-    let mut judge = Uci::spawn(&sf_path);
+    let mut sf = if versus_engine { Uci::spawn(&sf_path) } else { Uci::spawn(&sf_path) };
+    if versus_engine {
+        sf.setup(&[("Threads", "1".into()), ("Hash", "64".into())]);
+    } else {
+        sf.setup(&[("Threads", "1".into()), ("Hash", "64".into()), ("Skill Level", skill.to_string())]);
+    }
+    let mut judge = Uci::spawn(&std::env::var("JUDGE_SF").unwrap_or("/usr/games/stockfish".into()));
     judge.setup(&[("Threads", "1".into()), ("Hash", "64".into())]);
 
     let engine = SearchEngine::new(threads);
     engine.set_hash_size(hash_mb);
 
     let (mut w, mut d, mut l) = (0u32, 0u32, 0u32);
+    let (mut score_white, mut score_black, mut adjudicated) = (0.0f64, 0.0f64, 0u32);
     for g in 0..games {
         let engine_white = g % 2 == 0;
         let opening: Vec<String> = OPENINGS[(g / 2) % OPENINGS.len()].split(' ').map(String::from).collect();
-        engine.new_game();
+        engine.new_game(); // clears the TT and all search state: nothing leaks between games
         sf.send("ucinewgame");
+        sf.send("isready");
+        sf.wait_for("readyok");
         let mut board = BoardState::default();
         let mut moves: Vec<String> = Vec::new();
         for m in &opening {
@@ -182,11 +199,11 @@ fn main() {
                 break (if ev >= 300 { 1.0 } else if ev <= -300 { 0.0 } else { 0.5 }, format!("ply cap, judge {:+}", ev));
             }
             // Adjudicate clearly decided games (judge +-900cp for 6 consecutive plies) to save time.
-            if moves.len() > 40 {
+            if !no_adj && moves.len() > 40 {
                 let ev = judge_eval(&mut judge, &moves, white_to_move);
                 let ev_e = if engine_white { ev } else { -ev };
-                if ev_e.abs() >= 900 { adj_run += 1 } else { adj_run = 0 }
-                if adj_run >= 6 {
+                if ev_e.abs() >= adj_cp { adj_run += 1 } else { adj_run = 0 }
+                if adj_run >= adj_plies {
                     break (if ev_e > 0 { 1.0 } else { 0.0 }, format!("adjudicated {:+}", ev_e));
                 }
             }
@@ -214,6 +231,8 @@ fn main() {
             moves.push(uci);
         };
         if result == 1.0 { w += 1 } else if result == 0.5 { d += 1 } else { l += 1 }
+        if engine_white { score_white += result } else { score_black += result }
+        if reason.starts_with("adjudicated") { adjudicated += 1; }
         println!(
             "game {:>2} engine={} plies={:>3} result={} ({}) engine_avg_move={:.1}s total={:.0}s | +{} ={} -{}",
             g + 1,
@@ -230,6 +249,7 @@ fn main() {
     }
     let n = (w + d + l) as f64;
     println!("FINAL level {}: +{} ={} -{} score={:.1}%", level, w, d, l, 100.0 * (w as f64 + d as f64 / 2.0) / n);
+    println!("   as White: {:.1}/{}   as Black: {:.1}/{}   adjudicated games: {}", score_white, games / 2, score_black, games / 2, adjudicated);
     sf.send("quit");
     judge.send("quit");
 }

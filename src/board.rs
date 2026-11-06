@@ -269,6 +269,20 @@ impl BoardState {
         false
     }
 
+    /// Position after passing the turn (null move). The en-passant square is cleared
+    /// *and its Zobrist key removed*, so the hash always equals the hash of the same
+    /// position rebuilt from FEN. Repetition history is not extended.
+    pub fn make_null_move(&self) -> BoardState {
+        let mut nb = self.clone();
+        nb.side_to_move = nb.side_to_move.flip();
+        if let Some(ep) = nb.ep_square {
+            nb.hash ^= crate::zobrist::ZOBRIST.ep_keys[(ep % 8) as usize];
+        }
+        nb.ep_square = None;
+        nb.hash ^= crate::zobrist::ZOBRIST.side_key;
+        nb
+    }
+
     /// Cheap copy that drops the repetition history. Only for short-lived
     /// legality probes where history is irrelevant.
     #[inline]
