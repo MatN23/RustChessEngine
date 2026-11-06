@@ -85,6 +85,34 @@ impl MoveGenerator {
         Self::filter_legal(board, tactical)
     }
 
+    /// True if the side to move has at least one legal move. Exits at the first
+    /// legal move found, so it is far cheaper than generating the full legal list
+    /// (used for stalemate detection at quiet quiescence leaves).
+    pub fn has_legal_move(board: &BoardState) -> bool {
+        let us = board.side_to_move;
+        let king_sq = match board.get_king_square(us) {
+            Some(sq) => sq,
+            None => return true,
+        };
+        let in_check = board.is_square_attacked(king_sq, us.flip());
+        let king_lines = ATTACK_TABLES.get_queen_attacks(king_sq, 0);
+        for mv in Self::generate_pseudo_legal(board) {
+            let needs_test = in_check
+                || mv.from == king_sq
+                || mv.flags == EP_CAPTURE
+                || (king_lines >> mv.from) & 1 != 0;
+            if !needs_test {
+                return true;
+            }
+            let mut nb = board.clone_lite();
+            nb.make_move(&mv);
+            if !nb.is_in_check(us) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Removes pseudo-legal moves that leave the mover's king attacked.
     /// A move can only expose the king if the king is already in check, the
     /// king itself moves, it is en passant (two pawns leave a rank), or the
@@ -397,6 +425,9 @@ mod tactical_move_tests {
         assert!(promotions.iter().all(|mv| !mv.is_capture()));
     }
 
+    // ---------------------------------------------------------------------
+    // Legality-filter validation
+    // ---------------------------------------------------------------------
     fn perft(board: &BoardState, depth: u32) -> u64 {
         let moves = MoveGenerator::generate_legal_moves(board);
         if depth == 1 {
@@ -412,30 +443,154 @@ mod tactical_move_tests {
             .sum()
     }
 
+    /// Brute-force reference: every pseudo-legal move is made on a full copy and
+    /// kept only if the mover's king is not attacked afterwards.
+    fn reference_legal(b: &BoardState) -> Vec<Move> {
+        let us = b.side_to_move;
+        MoveGenerator::generate_pseudo_legal(b)
+            .into_iter()
+            .filter(|m| {
+                let mut nb = b.clone();
+                nb.make_move(m);
+                !nb.is_in_check(us)
+            })
+            .collect()
+    }
+
+    fn keys(moves: &[Move]) -> Vec<(u8, u8, u8)> {
+        let mut k: Vec<_> = moves.iter().map(|m| (m.from, m.to, m.flags)).collect();
+        k.sort();
+        k
+    }
+
     #[test]
-    fn fast_legality_filter_matches_known_perft() {
+    fn perft_reference_positions() {
+        // (fen, depth, nodes) from the standard perft suite.
         let cases = [
-            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 3, 8902),
-            ("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 3, 97862),
-            ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4, 43238),
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 5, 4_865_609u64),
+            ("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 4, 4_085_603),
+            ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 5, 674_624),
+            ("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", 4, 422_333),
+            ("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8", 4, 2_103_487),
+            ("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10", 3, 89_890),
+            ("n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1", 4, 182_838),
+            ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", 4, 314_346),
             ("8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1", 3, 863),
         ];
         for (fen, depth, expected) in cases {
             let board = BoardState::from_fen(fen).unwrap();
-            assert_eq!(perft(&board, depth), expected, "perft mismatch for {}", fen);
+            assert_eq!(perft(&board, depth), expected, "perft({}) mismatch for {}", depth, fen);
+        }
+    }
+
+    // Expected legal-move counts computed with an independent implementation (python-chess).
+    const TRICKY: [(&str, &str, usize); 26] = [
+        ("pinned rook on file", "4k3/8/8/8/4r3/8/4R3/4K3 w - - 0 1", 6),
+        ("pinned bishop cannot leave the line", "4k3/8/8/8/1b6/8/3B4/4K3 w - - 0 1", 6),
+        ("pinned queen diagonal", "7k/8/8/8/8/2q5/3Q4/4K3 w - - 0 1", 5),
+        ("pinned knight cannot move (discovered attack)", "4k3/4r3/8/8/8/8/4N3/4K3 w - - 0 1", 4),
+        ("ep capture exposes king horizontally (black)", "8/8/8/8/k2Pp2Q/8/8/3K4 b - d3 0 1", 6),
+        ("ep capture exposes king horizontally (white)", "8/8/8/K2pP2r/8/8/8/7k w - d6 0 1", 6),
+        ("ep legal without pin", "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", 7),
+        ("king cannot step into attack", "4k3/8/8/8/8/8/3r4/4K3 w - - 0 1", 2),
+        ("double check: king moves only", "4k3/8/8/8/8/5n2/4r3/4K3 w - - 0 1", 3),
+        ("double check: bishop and rook", "4k3/8/8/b7/8/8/8/R3K3 w - - 0 1", 5),
+        ("check: capture the checker", "4k3/8/8/8/8/8/3pp3/4K3 w - - 0 1", 3),
+        ("check: block with pawn", "4k3/8/8/8/8/8/4r1P1/R3K3 w - - 0 1", 3),
+        ("castling both sides", "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", 26),
+        ("castling through an attacked square", "r3k2r/8/8/8/8/5r2/8/R3K2R w KQkq - 0 1", 23),
+        ("castling out of check is illegal", "r3k2r/8/8/8/4r3/8/8/R3K2R w KQkq - 0 1", 4),
+        ("castling with attacked b1 is legal", "1r2k2r/8/8/8/8/8/8/R3K2R w KQk - 0 1", 26),
+        ("promotion with captures", "1n2k3/2P5/8/8/8/8/8/4K3 w - - 0 1", 13),
+        ("pinned pawn on the 7th", "4k3/4P3/8/8/8/8/8/r3K3 w - - 0 1", 3),
+        ("promotion that blocks a check", "3rk3/4P3/8/8/8/8/8/4K3 w - - 0 1", 7),
+        ("black promotion with capture", "4k3/8/8/8/8/8/3p4/2R4K b - - 0 1", 13),
+        ("stalemate", "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", 0),
+        ("checkmate", "R5k1/5ppp/8/8/8/8/8/6K1 b - - 0 1", 0),
+        ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 20),
+        ("kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 48),
+        ("rook endgame", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 14),
+        ("promotion race", "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1", 24),
+    ];
+
+    #[test]
+    fn tricky_positions_match_independent_reference_counts() {
+        for (name, fen, expected) in TRICKY {
+            let board = BoardState::from_fen(fen).unwrap();
+            let legal = MoveGenerator::generate_legal_moves(&board);
+            assert_eq!(legal.len(), expected, "{} ({})", name, fen);
+            assert_eq!(MoveGenerator::has_legal_move(&board), expected > 0, "has_legal_move: {}", name);
+            assert_eq!(keys(&legal), keys(&reference_legal(&board)), "differs from brute force: {}", name);
         }
     }
 
     #[test]
-    fn generate_captures_is_legal_subset_of_all_moves() {
-        let board = BoardState::from_fen(
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        )
-        .unwrap();
-        let all = MoveGenerator::generate_legal_moves(&board);
-        let caps = MoveGenerator::generate_captures(&board);
-        let expected: Vec<_> = all.iter().filter(|m| m.is_capture() || m.is_promotion()).collect();
-        assert_eq!(caps.len(), expected.len());
-        assert!(caps.iter().all(|m| all.contains(m)));
+    fn filtered_legality_matches_brute_force_on_random_playouts() {
+        let positions = random_playout_positions(6000, 0xC0FFEE);
+        assert!(positions.len() >= 6000);
+        for b in &positions {
+            let fast = MoveGenerator::generate_legal_moves(b);
+            let slow = reference_legal(b);
+            assert_eq!(keys(&fast), keys(&slow), "legal moves differ at {}", b.to_fen());
+
+            let caps = MoveGenerator::generate_captures(b);
+            let slow_caps: Vec<Move> = slow.iter().copied().filter(|m| m.is_capture() || m.is_promotion()).collect();
+            assert_eq!(keys(&caps), keys(&slow_caps), "captures differ at {}", b.to_fen());
+
+            assert_eq!(MoveGenerator::has_legal_move(b), !slow.is_empty(), "has_legal_move at {}", b.to_fen());
+        }
     }
+
+    #[test]
+    fn en_passant_and_capture_promotions_are_generated_as_captures() {
+        let ep = BoardState::from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1").unwrap();
+        assert!(MoveGenerator::generate_captures(&ep).iter().any(|m| m.to_uci() == "e5d6"));
+        let promo = BoardState::from_fen("1n2k3/2P5/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let caps = MoveGenerator::generate_captures(&promo);
+        assert_eq!(caps.iter().filter(|m| m.to_uci().starts_with("c7b8")).count(), 4);
+        assert_eq!(caps.iter().filter(|m| m.to_uci().starts_with("c7c8")).count(), 4); // quiet promotions too
+        // A pinned pawn's capture that leaves the pin line must be rejected...
+        let pinned = BoardState::from_fen("4r1k1/8/8/8/8/3n4/4P3/4K3 w - - 0 1").unwrap();
+        assert!(!MoveGenerator::generate_captures(&pinned).iter().any(|m| m.to_uci() == "e2d3"));
+        // ...but capturing the pinning piece itself along the pin line is legal.
+        let along = BoardState::from_fen("4k3/8/8/8/1b6/2P5/3K4/8 w - - 0 1").unwrap();
+        assert!(MoveGenerator::generate_captures(&along).iter().any(|m| m.to_uci() == "c3b4"));
+    }
+}
+
+/// Positions from random legal playouts (several start positions), for differential tests.
+#[cfg(test)]
+pub fn random_playout_positions(count: usize, seed: u64) -> Vec<BoardState> {
+    let starts = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N b - - 0 1",
+    ];
+    let mut x = seed | 1;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut out = Vec::with_capacity(count);
+    while out.len() < count {
+        let mut b = BoardState::from_fen(starts[(next() % starts.len() as u64) as usize]).unwrap();
+        for _ in 0..120 {
+            let legal = MoveGenerator::generate_legal_moves(&b);
+            if legal.is_empty() {
+                break;
+            }
+            let mv = legal[(next() % legal.len() as u64) as usize];
+            b.make_move(&mv);
+            out.push(b.clone());
+            if out.len() >= count {
+                break;
+            }
+        }
+    }
+    out
 }
