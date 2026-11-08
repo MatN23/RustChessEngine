@@ -35,6 +35,24 @@ pub fn calculate_time_allocation(my_time: u64, my_inc: u64, move_count: usize) -
     time_for_move.clamp(min_time, max_time)
 }
 
+/// Budget for one move given the clock *as Lichess reported it*. `clock_ms == None` means the
+/// game has no clock (unlimited time control). With `unlimited_move_ms == None` this keeps the
+/// legacy behaviour (a missing clock is treated as 60 s, i.e. about 2 s per move); with
+/// `Some(ms)` an unlimited game gets exactly that think time per move.
+pub fn budget_for_turn(
+    clock_ms: Option<u64>,
+    my_inc: u64,
+    move_count: usize,
+    overhead_ms: u64,
+    unlimited_move_ms: Option<u64>,
+) -> u64 {
+    match (clock_ms, unlimited_move_ms) {
+        (Some(t), _) => move_time_ms(t.min(10_800_000), my_inc, move_count, overhead_ms),
+        (None, Some(ms)) => ms,
+        (None, None) => move_time_ms(60_000, my_inc, move_count, overhead_ms),
+    }
+}
+
 /// Final search budget in ms.
 ///
 /// Python did `max(200, alloc - overhead)`, which can exceed the remaining clock

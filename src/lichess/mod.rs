@@ -22,6 +22,11 @@ pub struct Config {
     pub hash_mb: usize,
     /// Network/latency safety margin subtracted from every move's time budget.
     pub move_overhead_ms: u64,
+    /// Think time per move in games that have no clock at all (unlimited time control).
+    /// `None` (the default) keeps the legacy behaviour of assuming a 60 s clock (~2 s/move).
+    pub unlimited_move_ms: Option<u64>,
+    /// Use the whole per-move budget (ENGINE_FULL_BUDGET=1). Off by default.
+    pub full_budget: bool,
     pub search_depth: u8,
     pub ponder: bool,
     /// Upper bound for a single pondering search.
@@ -50,6 +55,18 @@ impl Config {
             threads: env_parse("ENGINE_THREADS", 8)?,
             hash_mb: env_parse("ENGINE_HASH", 2048)?,
             move_overhead_ms: env_parse("MOVE_OVERHEAD", 300)?,
+            unlimited_move_ms: match std::env::var("UNLIMITED_MOVE_TIME_MS") {
+                Err(_) => None,
+                Ok(v) => Some(
+                    v.trim()
+                        .parse::<u64>()
+                        .map_err(|_| format!("UNLIMITED_MOVE_TIME_MS={v:?} is not a valid value"))?,
+                ),
+            },
+            full_budget: matches!(
+                std::env::var("ENGINE_FULL_BUDGET").as_deref().map(str::trim),
+                Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
+            ),
             search_depth: env_parse("SEARCH_DEPTH", 32)?,
             ponder: env_parse::<u8>("PONDER", 1)? != 0,
             ponder_max_ms: env_parse("PONDER_MAX_MS", 20_000)?,

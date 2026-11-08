@@ -18,7 +18,7 @@ use super::bot::{decide_challenge, Bot, BotStats, Decision, Games};
 use super::client::{ApiError, LichessClient, NdjsonStream, StreamItem};
 use super::game::Pondering;
 use super::mock::{challenge_event, MockOptions, MockServer, TOKEN};
-use super::timing::{calculate_time_allocation, move_time_ms};
+use super::timing::{budget_for_turn, calculate_time_allocation, move_time_ms};
 use super::timing_cases::CASES;
 use super::Config;
 use crate::board::BoardState;
@@ -64,6 +64,24 @@ fn time_budget_never_flags_the_bot() {
     }
     // The case the Python version got wrong: 400 ms on the clock.
     assert!(move_time_ms(400, 0, 20, 300) <= 50);
+}
+
+#[test]
+fn clockless_game_budget_is_opt_in() {
+    // Default (setting unset): legacy behaviour, a missing clock is treated as 60 s => <= ~1.7 s.
+    let legacy = budget_for_turn(None, 0, 20, 300, None);
+    assert_eq!(legacy, move_time_ms(60_000, 0, 20, 300));
+    assert!(legacy <= 1700);
+    // UNLIMITED_MOVE_TIME_MS set: exactly that think time, at any point of the game.
+    assert_eq!(budget_for_turn(None, 0, 20, 300, Some(30_000)), 30_000);
+    assert_eq!(budget_for_turn(None, 0, 0, 300, Some(45_000)), 45_000);
+    // A real clock is never affected by the setting.
+    for unl in [None, Some(30_000)] {
+        assert_eq!(
+            budget_for_turn(Some(180_000), 2000, 20, 300, unl),
+            move_time_ms(180_000, 2000, 20, 300)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +325,8 @@ fn test_config(url: &str) -> Config {
         threads: 1,
         hash_mb: 16,
         move_overhead_ms: 50,
+        unlimited_move_ms: None,
+        full_budget: false,
         search_depth: 32,
         ponder: true,
         ponder_max_ms: 5_000,

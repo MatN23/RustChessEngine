@@ -395,10 +395,19 @@ impl<'a> GameSession<'a> {
 
         let white = self.my_color == Some(Color::White);
         let (tkey, ikey) = if white { ("wtime", "winc") } else { ("btime", "binc") };
-        let my_time = state[tkey].as_u64().unwrap_or(60_000).min(10_800_000);
+        let clock = state[tkey].as_u64();
+        let my_time = clock.unwrap_or(60_000).min(10_800_000);
         let my_inc = state[ikey].as_u64().unwrap_or(0).min(10_800_000);
 
-        let alloc = timing::move_time_ms(my_time, my_inc, ply, self.ctx.cfg.move_overhead_ms);
+        // No clock in the state = unlimited game. By default this still assumes a 60 s clock (the
+        // original behaviour); set UNLIMITED_MOVE_TIME_MS to give such games a fixed think time.
+        let alloc = timing::budget_for_turn(
+            clock,
+            my_inc,
+            ply,
+            self.ctx.cfg.move_overhead_ms,
+            self.ctx.cfg.unlimited_move_ms,
+        );
 
         let t0 = Instant::now();
         let result = self

@@ -106,13 +106,15 @@ impl Bot {
         println!("Logged in as {} ({}/@/{})", account.username, cfg.base_url, account.username);
 
         println!(
-            "Initializing engine: {} thread(s), {} MB hash, ponder {}",
+            "Initializing engine: {} thread(s), {} MB hash, ponder {}, full time budget {}",
             cfg.threads,
             cfg.hash_mb,
-            if cfg.ponder { "on" } else { "off" }
+            if cfg.ponder { "on" } else { "off" },
+            if cfg.full_budget { "on" } else { "off" }
         );
         let engine = Arc::new(SearchEngine::new(cfg.threads));
         engine.set_hash_size(cfg.hash_mb);
+        engine.set_full_budget(cfg.full_budget);
 
         Ok(Bot {
             ctx: GameContext {

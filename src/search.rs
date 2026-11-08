@@ -51,6 +51,11 @@ pub struct SearchEngine {
     helper_stop: Arc<AtomicBool>,
     // Quiescence delta pruning; only ever turned off by tests that validate it.
     delta_pruning: AtomicBool,
+    // Opt-in: spend the whole per-move budget (see `set_full_budget`). Off by default.
+    full_budget: AtomicBool,
+    // Set by the main thread when its last root search ended with a move whose score lay
+    // strictly inside the search window (i.e. a real, fully verified best move).
+    root_exact: AtomicBool,
     multi_pv: usize,
     pub contempt: i32,
     
@@ -182,6 +187,8 @@ impl SearchEngine {
             stop: Arc::new(AtomicBool::new(false)),
             helper_stop: Arc::new(AtomicBool::new(false)),
             delta_pruning: AtomicBool::new(true),
+            full_budget: AtomicBool::new(false),
+            root_exact: AtomicBool::new(false),
             multi_pv: 1,
             contempt: 20,
             thread_data: Arc::new(thread_data),
@@ -283,9 +290,17 @@ impl SearchEngine {
         let mut last_iter_time = Duration::ZERO;
 
         // Iterative deepening
+        let full_budget = self.full_budget.load(Ordering::Relaxed);
         for depth in 1..=max_depth {
             if self.stop.load(Ordering::Relaxed) {
                 break;
+            }
+            if full_budget {
+                if let Some(limit) = time_limit {
+                    if start_time.elapsed() >= limit {
+                        break;
+                    }
+                }
             }
 
             let soft_limit = time_limit.map(|t| t.mul_f64(0.5));
@@ -303,9 +318,17 @@ impl SearchEngine {
                 self.search_root(&board, depth, -INFINITY, INFINITY, root_hint, start_time, soft_limit, hard_limit)
             };
 
-            // Do not accept results from an interrupted iteration.
-            // Retain the last completed iteration, or the legal fallback.
+            // Interrupted iteration. By default its result is discarded and the last completed
+            // iteration (or the legal fallback) is kept. In full-budget mode it is kept when the
+            // root search had fully searched a move whose score lies inside the window: that move
+            // is at least as well verified as the previous iteration's best.
             if self.stop.load(Ordering::Relaxed) {
+                if full_budget && depth > 1 && self.root_exact.load(Ordering::Relaxed) {
+                    if let Some(m) = mv {
+                        best_move = Some(m);
+                        best_score = score;
+                    }
+                }
                 break;
             }
 
@@ -363,10 +386,12 @@ impl SearchEngine {
             // Do not start an iteration that cannot finish: an interrupted
             // iteration is discarded, so its time is wasted. Each iteration costs
             // roughly 2-3x the previous one; allow 2x as the cut-off estimate.
-            if let Some(hard) = hard_limit {
-                let elapsed = start_time.elapsed();
-                if elapsed + last_iter_time.mul_f64(2.0) > hard {
-                    break;
+            if !full_budget {
+                if let Some(hard) = hard_limit {
+                    let elapsed = start_time.elapsed();
+                    if elapsed + last_iter_time.mul_f64(2.0) > hard {
+                        break;
+                    }
                 }
             }
         }
@@ -417,7 +442,7 @@ impl SearchEngine {
             let (score, mv, pv) = self.search_root(board, depth, alpha, beta, root_hint, start_time, soft_limit, hard_limit);
 
             if self.stop.load(Ordering::Relaxed) {
-                return (prev_score, mv, pv);
+                return (score, mv, pv);
             }
 
             if score <= alpha {
@@ -471,6 +496,7 @@ impl SearchEngine {
             self.flush_thread_nodes(&mut thread_data);
             let mut pv = MoveList::new();
             pv.push(moves[0]);
+            self.root_exact.store(true, Ordering::Relaxed);
             return (score, Some(moves[0]), pv);
         }
 
@@ -540,6 +566,7 @@ impl SearchEngine {
         let mut best_score = -INFINITY;
         let mut best_pv = MoveList::new();
         let mut move_count = 0;
+        let alpha_orig = alpha;
 
         for mv in moves {
             if self.check_time_abort(start_time, soft_limit, hard_limit) || self.halted(&thread_data) {
@@ -598,6 +625,12 @@ impl SearchEngine {
             }
         }
 
+        if thread_id == 0 {
+            self.root_exact.store(
+                best_move.is_some() && best_score > alpha_orig && best_score < beta,
+                Ordering::Relaxed,
+            );
+        }
         self.flush_thread_nodes(&mut thread_data);
         drop(thread_data);
         (best_score, best_move, best_pv)
@@ -1356,6 +1389,14 @@ fn order_captures_internal(&self, board: &BoardState, captures: &mut MoveList) {
 
     pub fn set_multi_pv(&mut self, count: usize) {
         self.multi_pv = count.clamp(1, 5);
+    }
+
+    /// Full-budget mode (off by default). When on, the search does not skip an iteration just
+    /// because it probably cannot finish, and when time runs out it keeps the result of the
+    /// interrupted iteration if a root move was already fully searched inside the window.
+    /// Net effect: the engine uses (nearly) all of the time it is given.
+    pub fn set_full_budget(&self, on: bool) {
+        self.full_budget.store(on, Ordering::Relaxed);
     }
 
     pub fn stop(&self) {
@@ -2354,6 +2395,74 @@ mod search_regression_tests {
                     wrong_prev, score, full.0, fen
                 );
             }
+        }
+    }
+
+    // ---- opt-in full time budget ------------------------------------------------------------
+    #[test]
+    fn full_budget_is_off_by_default() {
+        assert!(!SearchEngine::new(1).full_budget.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn full_budget_mode_uses_nearly_the_whole_time() {
+        let board = BoardState::from_fen(MIDDLEGAME).unwrap();
+        let legal = MoveGenerator::generate_legal_moves(&board);
+        let engine = SearchEngine::new(1);
+        engine.set_full_budget(true);
+        let t0 = Instant::now();
+        let r = engine.search(board.clone(), 64, Some(600));
+        let el = t0.elapsed();
+        assert!(el >= Duration::from_millis(540), "used only {:?} of a 600 ms budget", el);
+        assert!(el < Duration::from_millis(1300), "overran the budget: {:?}", el);
+        assert!(r.best_move.map_or(false, |m| legal.contains(&m)));
+    }
+
+    #[test]
+    fn interrupted_iterations_in_full_budget_mode_always_yield_a_legal_move() {
+        let fens = [
+            MIDDLEGAME,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "2rr2k1/pp3ppp/4pn2/q7/3P4/P1N1PB2/1P3PPP/2RQ1RK1 w - - 0 18",
+            "8/5pk1/6p1/3R4/8/6P1/5PK1/3r4 w - - 0 40",
+        ];
+        for fen in fens {
+            let board = BoardState::from_fen(fen).unwrap();
+            let legal = MoveGenerator::generate_legal_moves(&board);
+            for ms in [30u64, 80, 150, 300] {
+                let engine = SearchEngine::new(1);
+                engine.set_full_budget(true);
+                let t0 = Instant::now();
+                let r = engine.search(board.clone(), 64, Some(ms));
+                assert!(r.best_move.map_or(false, |m| legal.contains(&m)), "illegal/no move at {} ms for {}", ms, fen);
+                assert!(r.score.abs() < INFINITY);
+                assert!(t0.elapsed() < Duration::from_millis(ms + 400), "overran {} ms: {:?}", ms, t0.elapsed());
+            }
+        }
+    }
+
+    #[test]
+    fn full_budget_mode_still_stops_on_a_proven_mate_and_finds_the_shortest() {
+        let engine = SearchEngine::new(1);
+        engine.set_full_budget(true);
+        let t = Instant::now();
+        let r = engine.search(BoardState::from_fen(MATE_IN_3).unwrap(), 40, Some(20_000));
+        assert_eq!(r.score, MATE_SCORE - 5);
+        assert!(t.elapsed() < Duration::from_secs(10), "burned the clock after a proven mate");
+    }
+
+    #[test]
+    fn full_budget_mode_does_not_change_the_move_in_forced_or_trivial_positions() {
+        // One legal move returns immediately regardless of the setting.
+        let b = BoardState::from_fen("8/1r3q1K/8/6k1/8/8/8/8 w - - 0 1").unwrap();
+        assert_eq!(MoveGenerator::generate_legal_moves(&b).len(), 1, "test needs exactly one legal move");
+        for on in [false, true] {
+            let engine = SearchEngine::new(1);
+            engine.set_full_budget(on);
+            let t = Instant::now();
+            let r = engine.search(b.clone(), 64, Some(5_000));
+            assert!(r.best_move.is_some());
+            assert!(t.elapsed() < Duration::from_millis(500), "forced move took {:?} (full budget {})", t.elapsed(), on);
         }
     }
 }
