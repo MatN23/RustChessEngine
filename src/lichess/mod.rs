@@ -1,6 +1,7 @@
 //! Lichess Bot API integration, written in Rust.
 
 pub mod bot;
+pub mod challenger;
 pub mod client;
 pub mod game;
 pub mod timing;
@@ -34,6 +35,16 @@ pub struct Config {
     /// Games played at once. The engine has one search lock and one TT, so
     /// values above 1 make games steal each other's clock time.
     pub max_games: usize,
+    /// Opt-in: challenge other bots automatically (AUTO_CHALLENGE=1).
+    pub auto_challenge: bool,
+    /// Fixed opponents (CHALLENGE_BOTS=a,b,c). Empty = pick from the bots that are online.
+    pub challenge_bots: Vec<String>,
+    /// (seconds, increment) of the games we offer (CHALLENGE_TIME=180+2).
+    pub challenge_clock: (u32, u32),
+    pub challenge_rated: bool,
+    /// Minimum seconds between two challenges we send.
+    pub challenge_interval_secs: u64,
+    pub challenge_max_per_hour: u32,
 }
 
 impl Config {
@@ -71,6 +82,25 @@ impl Config {
             ponder: env_parse::<u8>("PONDER", 1)? != 0,
             ponder_max_ms: env_parse("PONDER_MAX_MS", 20_000)?,
             max_games: env_parse("MAX_GAMES", 1)?,
+            auto_challenge: matches!(
+                std::env::var("AUTO_CHALLENGE").as_deref().map(str::trim),
+                Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
+            ),
+            challenge_bots: std::env::var("CHALLENGE_BOTS")
+                .unwrap_or_default()
+                .split(',')
+                .map(|n| n.trim().to_lowercase())
+                .filter(|n| !n.is_empty())
+                .collect(),
+            challenge_clock: challenger::parse_clock(
+                &std::env::var("CHALLENGE_TIME").unwrap_or_else(|_| "180+2".to_string()),
+            )?,
+            challenge_rated: matches!(
+                std::env::var("CHALLENGE_RATED").as_deref().map(str::trim),
+                Ok("1") | Ok("true") | Ok("TRUE") | Ok("on") | Ok("ON")
+            ),
+            challenge_interval_secs: env_parse("CHALLENGE_INTERVAL", 30)?,
+            challenge_max_per_hour: env_parse("CHALLENGE_MAX_PER_HOUR", 10)?,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -88,6 +118,17 @@ impl Config {
         }
         if self.search_depth == 0 {
             return Err("SEARCH_DEPTH must be >= 1".into());
+        }
+        if self.auto_challenge {
+            if self.challenge_interval_secs < 5 {
+                return Err("CHALLENGE_INTERVAL must be at least 5 seconds".into());
+            }
+            if self.challenge_max_per_hour == 0 {
+                return Err("CHALLENGE_MAX_PER_HOUR must be >= 1".into());
+            }
+            if let Some(bad) = self.challenge_bots.iter().find(|n| !client::valid_username(n)) {
+                return Err(format!("CHALLENGE_BOTS: {bad:?} is not a valid Lichess username"));
+            }
         }
         if !(self.base_url.starts_with("https://") || self.base_url.starts_with("http://")) {
             return Err("LICHESS_URL must start with http:// or https://".into());

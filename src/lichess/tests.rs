@@ -331,6 +331,12 @@ fn test_config(url: &str) -> Config {
         ponder: true,
         ponder_max_ms: 5_000,
         max_games: 1,
+        auto_challenge: false,
+        challenge_bots: vec![],
+        challenge_clock: (180, 2),
+        challenge_rated: false,
+        challenge_interval_secs: 5,
+        challenge_max_per_hour: 10,
     }
 }
 
@@ -630,4 +636,164 @@ fn e2e_real_binary_process() {
     let st = server.state.lock().unwrap();
     assert!(st.rejected.is_empty(), "{:?}", st.rejected);
     assert_eq!(st.bot_moves.len(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// auto-challenge (opt-in)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn challenge_client_calls_hit_the_right_endpoints_with_the_right_parameters() {
+    let server = MockServer::start(MockOptions {
+        online_bots: vec!["MaiaLike".into(), "Other-Bot".into(), "bad name!".into()],
+        ..Default::default()
+    });
+    let client = LichessClient::new(&server.url, TOKEN);
+
+    let id = client.create_challenge("SomeBot", false, 180, 2).expect("create");
+    assert_eq!(id, "mockch01");
+    client.cancel_challenge(&id).expect("cancel");
+    // invalid usernames are refused before any request is made
+    assert!(matches!(client.create_challenge("bad name!", false, 180, 2), Err(ApiError::BadInput(_))));
+    assert!(matches!(client.create_challenge("../x", false, 180, 2), Err(ApiError::BadInput(_))));
+
+    let bots = client.online_bots(50).expect("online bots");
+    assert_eq!(bots, vec!["MaiaLike".to_string(), "Other-Bot".to_string()], "invalid names are filtered out");
+
+    let st = server.state.lock().unwrap();
+    assert_eq!(st.created.len(), 1);
+    let (user, body) = &st.created[0];
+    assert_eq!(user, "SomeBot");
+    for part in ["rated=false", "clock.limit=180", "clock.increment=2", "variant=standard"] {
+        assert!(body.contains(part), "missing {part} in {body}");
+    }
+    assert_eq!(st.cancelled, vec!["mockch01".to_string()]);
+}
+
+#[test]
+fn rate_limit_on_challenge_creation_surfaces_as_status_429() {
+    let server = MockServer::start(MockOptions { create_status: 429, ..Default::default() });
+    let client = LichessClient::new(&server.url, TOKEN);
+    assert!(matches!(client.create_challenge("SomeBot", false, 180, 2), Err(ApiError::Status(429, _))));
+}
+
+#[test]
+fn bot_sends_a_challenge_when_enabled_and_never_when_disabled() {
+    for enabled in [true, false] {
+        let created = Arc::new(Mutex::new(Vec::new()));
+        let cap = Arc::clone(&created);
+        let waited_enough = Instant::now() + Duration::from_millis(2500);
+        let opts = MockOptions { challenges: vec![], ..Default::default() };
+        let _ = run_scenario(
+            opts,
+            move |cfg| {
+                cfg.auto_challenge = enabled;
+                cfg.challenge_bots = vec!["opponentbot".into()];
+                cfg.challenge_clock = (300, 3);
+                cfg.challenge_rated = true;
+            },
+            move |srv, _| {
+                let st = srv.state.lock().unwrap();
+                *cap.lock().unwrap() = st.created.clone();
+                if enabled { !st.created.is_empty() } else { Instant::now() > waited_enough }
+            },
+        );
+        let created = created.lock().unwrap();
+        if enabled {
+            assert_eq!(created.len(), 1, "exactly one challenge per interval");
+            assert_eq!(created[0].0, "opponentbot");
+            assert!(created[0].1.contains("clock.limit=300") && created[0].1.contains("rated=true"));
+        } else {
+            assert!(created.is_empty(), "feature is off by default: nothing must be sent");
+        }
+    }
+}
+
+#[test]
+fn bot_discovers_online_bots_and_does_not_challenge_itself() {
+    let created = Arc::new(Mutex::new(Vec::new()));
+    let cap = Arc::clone(&created);
+    let opts = MockOptions {
+        challenges: vec![],
+        online_bots: vec!["TestBot".into(), "RealOpponent".into()], // TestBot is the bot itself
+        ..Default::default()
+    };
+    let _ = run_scenario(
+        opts,
+        |cfg| {
+            cfg.auto_challenge = true;
+            cfg.challenge_bots = vec![]; // discover
+        },
+        move |srv, _| {
+            let st = srv.state.lock().unwrap();
+            *cap.lock().unwrap() = st.created.clone();
+            !st.created.is_empty()
+        },
+    );
+    assert_eq!(created.lock().unwrap()[0].0, "RealOpponent");
+}
+
+#[test]
+fn rate_limited_bot_backs_off_instead_of_hammering_lichess() {
+    let attempts = Arc::new(Mutex::new(0usize));
+    let cap = Arc::clone(&attempts);
+    let until = Instant::now() + Duration::from_millis(3500);
+    let opts = MockOptions { challenges: vec![], create_status: 429, ..Default::default() };
+    let _ = run_scenario(
+        opts,
+        |cfg| {
+            cfg.auto_challenge = true;
+            cfg.challenge_bots = vec!["opponentbot".into()];
+        },
+        move |srv, _| {
+            *cap.lock().unwrap() = srv.state.lock().unwrap().created.len();
+            Instant::now() > until
+        },
+    );
+    assert_eq!(*attempts.lock().unwrap(), 1, "after a 429 the bot must pause, not retry every tick");
+}
+
+#[test]
+fn declined_challenge_blocks_the_opponent_and_frees_the_game_slot() {
+    let server = MockServer::start(MockOptions::default());
+    let mut cfg = test_config(&server.url);
+    cfg.auto_challenge = true;
+    let bot = Bot::connect(cfg).expect("connect");
+    let ch = bot.challenger();
+    let now = Instant::now();
+    ch.lock().unwrap().on_sent("abcd1234", "maia9", now);
+    assert!(bot.games().lock().unwrap().try_reserve("abcd1234", 1));
+    assert_eq!(bot.games().lock().unwrap().count(), 1);
+
+    bot.process_event(&json!({
+        "type": "challengeDeclined",
+        "challenge": {"id": "abcd1234", "declineReasonKey": "noBot"}
+    }));
+    assert!(!ch.lock().unwrap().has_pending());
+    assert!(ch.lock().unwrap().is_blocked("maia9", Instant::now() + Duration::from_secs(3600)), "noBot is a long block");
+    assert_eq!(bot.games().lock().unwrap().count(), 0, "slot released");
+
+    // an accepted challenge becomes a game: gameStart clears the pending state
+    ch.lock().unwrap().on_sent("efgh5678", "beta", now);
+    bot.process_event(&json!({"type": "challengeCanceled", "challenge": {"id": "efgh5678"}}));
+    assert!(!ch.lock().unwrap().has_pending());
+}
+
+#[test]
+fn auto_challenge_settings_are_validated() {
+    let server = MockServer::start(MockOptions::default());
+    let mut cfg = test_config(&server.url);
+    cfg.auto_challenge = true;
+    assert!(cfg.validate().is_ok());
+    cfg.challenge_interval_secs = 1;
+    assert!(cfg.validate().is_err());
+    cfg.challenge_interval_secs = 30;
+    cfg.challenge_max_per_hour = 0;
+    assert!(cfg.validate().is_err());
+    cfg.challenge_max_per_hour = 5;
+    cfg.challenge_bots = vec!["bad name!".into()];
+    assert!(cfg.validate().is_err());
+    // when the feature is off these settings are not checked
+    cfg.auto_challenge = false;
+    assert!(cfg.validate().is_ok());
 }

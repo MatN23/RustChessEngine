@@ -44,6 +44,12 @@ fn valid_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
+/// Lichess usernames: letters, digits, `_` and `-`, 2 to 30 characters.
+pub fn valid_username(s: &str) -> bool {
+    (2..=30).contains(&s.len())
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 fn valid_uci(s: &str) -> bool {
     let b = s.as_bytes();
     (b.len() == 4 || b.len() == 5)
@@ -162,6 +168,70 @@ impl LichessClient {
             return Err(ApiError::BadInput(format!("challenge id {id:?}")));
         }
         self.post(&format!("/api/challenge/{id}/decline"), &[("reason", reason)])
+    }
+
+    /// Challenge another account to a standard game. Returns the challenge id (which becomes the
+    /// game id if the opponent accepts).
+    pub fn create_challenge(
+        &self,
+        username: &str,
+        rated: bool,
+        limit_secs: u32,
+        increment_secs: u32,
+    ) -> Result<String, ApiError> {
+        if !valid_username(username) {
+            return Err(ApiError::BadInput(format!("username {username:?}")));
+        }
+        let limit = limit_secs.to_string();
+        let inc = increment_secs.to_string();
+        let body = self
+            .api
+            .post(&self.url(&format!("/api/challenge/{username}")))
+            .set("Authorization", &self.auth)
+            .send_form(&[
+                ("rated", if rated { "true" } else { "false" }),
+                ("clock.limit", limit.as_str()),
+                ("clock.increment", inc.as_str()),
+                ("variant", "standard"),
+            ])
+            .map_err(map_err)?
+            .into_string()
+            .map_err(|e| ApiError::Transport(e.to_string()))?;
+        let v: Value = serde_json::from_str(&body)
+            .map_err(|e| ApiError::Status(200, format!("challenge response is not JSON: {e}")))?;
+        let id = v["challenge"]["id"]
+            .as_str()
+            .or_else(|| v["id"].as_str())
+            .unwrap_or("");
+        if !valid_id(id) {
+            return Err(ApiError::Status(200, "challenge response had no usable id".into()));
+        }
+        Ok(id.to_string())
+    }
+
+    pub fn cancel_challenge(&self, id: &str) -> Result<(), ApiError> {
+        if !valid_id(id) {
+            return Err(ApiError::BadInput(format!("challenge id {id:?}")));
+        }
+        self.post(&format!("/api/challenge/{id}/cancel"), &[])
+    }
+
+    /// Usernames of bots that are currently online (at most `limit`).
+    pub fn online_bots(&self, limit: usize) -> Result<Vec<String>, ApiError> {
+        let body = self
+            .api
+            .get(&self.url(&format!("/api/bot/online?nb={}", limit.clamp(1, 200))))
+            .set("Authorization", &self.auth)
+            .call()
+            .map_err(map_err)?
+            .into_string()
+            .map_err(|e| ApiError::Transport(e.to_string()))?;
+        Ok(body
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v["username"].as_str().or_else(|| v["id"].as_str()).map(str::to_string))
+            .filter(|n| valid_username(n))
+            .collect())
     }
 
     pub fn make_move(&self, game_id: &str, uci: &str) -> Result<(), ApiError> {

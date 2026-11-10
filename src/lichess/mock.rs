@@ -43,6 +43,10 @@ pub struct MockOptions {
     /// Challenge events (`{"type":"challenge", ...}`) sent on event-stream connect.
     pub challenges: Vec<Value>,
     pub clock_ms: u64,
+    /// Usernames returned by GET /api/bot/online.
+    pub online_bots: Vec<String>,
+    /// HTTP status for POST /api/challenge/{user} (200 = created).
+    pub create_status: u16,
 }
 
 impl Default for MockOptions {
@@ -58,6 +62,8 @@ impl Default for MockOptions {
             drop_stream_after_bot_move: None,
             challenges: vec![],
             clock_ms: 20_000,
+            online_bots: vec![],
+            create_status: 200,
         }
     }
 }
@@ -81,6 +87,9 @@ pub struct MockState {
     event_tx: Option<Sender<Option<String>>>,
     pub accepted: Vec<String>,
     pub declined: Vec<(String, String)>,
+    /// (username, form body) of every POST /api/challenge/{user}.
+    pub created: Vec<(String, String)>,
+    pub cancelled: Vec<String>,
     pub bot_moves: Vec<String>,
     pub rejected: Vec<String>,
     pub game_streams_opened: usize,
@@ -134,6 +143,8 @@ impl MockServer {
             event_tx: None,
             accepted: vec![],
             declined: vec![],
+            created: vec![],
+            cancelled: vec![],
             bot_moves: vec![],
             rejected: vec![],
             game_streams_opened: 0,
@@ -243,6 +254,7 @@ fn respond_json(stream: &mut TcpStream, code: u16, body: &str) {
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
+        429 => "Too Many Requests",
         401 => "Unauthorized",
         404 => "Not Found",
         _ => "Error",
@@ -347,6 +359,42 @@ fn handle_conn(mut stream: TcpStream, state: Arc<Mutex<MockState>>, stop: Arc<At
                 .declined
                 .push((id.to_string(), reason));
             respond_json(&mut stream, 200, r#"{"ok":true}"#);
+        }
+        ("POST", p) if p.starts_with("/api/challenge/") && p.ends_with("/cancel") => {
+            let id = p
+                .trim_start_matches("/api/challenge/")
+                .trim_end_matches("/cancel");
+            state.lock().unwrap().cancelled.push(id.to_string());
+            respond_json(&mut stream, 200, r#"{"ok":true}"#);
+        }
+        ("POST", p) if p.starts_with("/api/challenge/") => {
+            let user = p.trim_start_matches("/api/challenge/").to_string();
+            let (status, n) = {
+                let mut st = state.lock().unwrap();
+                st.created.push((user, req.body.clone()));
+                (st.opts.create_status, st.created.len())
+            };
+            if status == 200 {
+                respond_json(&mut stream, 200, &json!({"challenge": {"id": format!("mockch{n:02}")}}).to_string());
+            } else {
+                respond_json(&mut stream, status, r#"{"error":"nope"}"#);
+            }
+        }
+        ("GET", p) if p.starts_with("/api/bot/online") => {
+            let lines: Vec<String> = state
+                .lock()
+                .unwrap()
+                .opts
+                .online_bots
+                .iter()
+                .map(|n| json!({"id": n.to_lowercase(), "username": n}).to_string())
+                .collect();
+            let body = lines.join("\n");
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
         ("POST", p) if p.starts_with("/api/bot/game/") && p.contains("/move/") => {
             let rest = p.trim_start_matches("/api/bot/game/");

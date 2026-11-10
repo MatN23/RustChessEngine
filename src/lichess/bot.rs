@@ -5,10 +5,11 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use super::challenger::{Action, ChallengeSettings, Challenger};
 use super::client::{ApiError, LichessClient, StreamItem};
 use super::game::{play_game, GameContext, GameOutcome, THREAD_STACK};
 use super::Config;
@@ -93,6 +94,7 @@ pub struct Bot {
     ctx: GameContext,
     games: Arc<Mutex<Games>>,
     stats: Arc<BotStats>,
+    challenger: Arc<Mutex<Challenger>>,
 }
 
 impl Bot {
@@ -116,6 +118,18 @@ impl Bot {
         engine.set_hash_size(cfg.hash_mb);
         engine.set_full_budget(cfg.full_budget);
 
+        let challenger = Arc::new(Mutex::new(Challenger::new(
+            ChallengeSettings {
+                targets: cfg.challenge_bots.clone(),
+                limit_secs: cfg.challenge_clock.0,
+                increment_secs: cfg.challenge_clock.1,
+                rated: cfg.challenge_rated,
+                interval: Duration::from_secs(cfg.challenge_interval_secs),
+                max_per_hour: cfg.challenge_max_per_hour,
+            },
+            &account.id,
+        )));
+
         Ok(Bot {
             ctx: GameContext {
                 client,
@@ -125,7 +139,12 @@ impl Bot {
             },
             games: Arc::new(Mutex::new(Games::default())),
             stats: Arc::new(BotStats::default()),
+            challenger,
         })
+    }
+
+    pub fn challenger(&self) -> Arc<Mutex<Challenger>> {
+        Arc::clone(&self.challenger)
     }
 
     pub fn stats(&self) -> Arc<BotStats> {
@@ -139,6 +158,20 @@ impl Bot {
     /// Runs until `shutdown` is set. Returns `Err` only for unrecoverable
     /// problems (revoked / invalid token).
     pub fn run(&self, shutdown: &AtomicBool) -> Result<(), String> {
+        if !self.ctx.cfg.auto_challenge {
+            return self.run_events(shutdown);
+        }
+        // Opt-in: a second thread that challenges other bots while the event loop runs.
+        let stop = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| self.challenge_loop(shutdown, &stop));
+            let result = self.run_events(shutdown);
+            stop.store(true, Ordering::Relaxed);
+            result
+        })
+    }
+
+    fn run_events(&self, shutdown: &AtomicBool) -> Result<(), String> {
         println!("Bot running, waiting for challenges (Ctrl+C to stop)");
         let mut backoff = 1u64;
 
@@ -189,9 +222,23 @@ impl Bot {
             Some("challengeCanceled") | Some("challengeDeclined") => {
                 if let Some(id) = ev["challenge"]["id"].as_str() {
                     self.games.lock().unwrap().release_reservation(id);
+                    let mut ch = self.challenger.lock().unwrap();
+                    if ev["type"].as_str() == Some("challengeDeclined") {
+                        let reason = ev["challenge"]["declineReasonKey"].as_str().unwrap_or("generic");
+                        if let Some(name) = ch.on_declined(id, reason, Instant::now()) {
+                            println!("{name} declined our challenge ({reason}); leaving them alone for a while");
+                        }
+                    } else {
+                        ch.on_resolved(id);
+                    }
                 }
             }
-            Some("gameStart") => self.on_game_start(&ev["game"]),
+            Some("gameStart") => {
+                if let Some(id) = ev["game"]["gameId"].as_str().or_else(|| ev["game"]["id"].as_str()) {
+                    self.challenger.lock().unwrap().on_resolved(id);
+                }
+                self.on_game_start(&ev["game"])
+            }
             Some("gameFinish") => {
                 println!("game {} finished", ev["game"]["id"].as_str().unwrap_or("?"));
             }
@@ -281,6 +328,84 @@ impl Bot {
         if let Err(e) = spawned {
             eprintln!("could not spawn game thread: {e}");
             self.games.lock().unwrap().finish(id);
+        }
+    }
+}
+
+impl Bot {
+    /// Background loop for AUTO_CHALLENGE: asks the pure `Challenger` what to do and performs it.
+    fn challenge_loop(&self, shutdown: &AtomicBool, stop: &AtomicBool) {
+        let cfg = &self.ctx.cfg;
+        let (limit, inc) = cfg.challenge_clock;
+        println!(
+            "auto-challenge on: {}+{} {}, every {} s at most, {} per hour, opponents: {}",
+            limit,
+            inc,
+            if cfg.challenge_rated { "rated" } else { "casual" },
+            cfg.challenge_interval_secs,
+            cfg.challenge_max_per_hour,
+            if cfg.challenge_bots.is_empty() { "any online bot".to_string() } else { cfg.challenge_bots.join(", ") }
+        );
+        let mut cached: Vec<String> = Vec::new();
+        let mut cached_at: Option<Instant> = None;
+        let done = || shutdown.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed);
+
+        while !done() {
+            let step = Duration::from_millis(500);
+            thread::sleep(step);
+            let now = Instant::now();
+            let slots_free = self.games.lock().unwrap().count() < cfg.max_games;
+
+            let candidates: Vec<String> = if !cfg.challenge_bots.is_empty() {
+                cfg.challenge_bots.clone()
+            } else {
+                let stale = cached_at.map_or(true, |t| now.duration_since(t) > Duration::from_secs(600));
+                if stale && slots_free {
+                    match self.ctx.client.online_bots(60) {
+                        Ok(v) => {
+                            cached = v;
+                            cached_at = Some(now);
+                        }
+                        Err(e) => {
+                            eprintln!("could not list online bots: {e}");
+                            cached.clear();
+                            // retry in about a minute
+                            cached_at = Some(now - Duration::from_secs(540));
+                        }
+                    }
+                }
+                cached.clone()
+            };
+
+            let action = self.challenger.lock().unwrap().next_action(now, slots_free, &candidates);
+            match action {
+                Action::Wait => {}
+                Action::Cancel(id) => {
+                    if let Err(e) = self.ctx.client.cancel_challenge(&id) {
+                        eprintln!("could not cancel challenge {id}: {e}");
+                    }
+                    self.games.lock().unwrap().release_reservation(&id);
+                    self.challenger.lock().unwrap().on_timed_out(&id, now);
+                    println!("challenge {id} was not answered in time; cancelled");
+                }
+                Action::Send(name) => match self.ctx.client.create_challenge(&name, cfg.challenge_rated, limit, inc) {
+                    Ok(id) => {
+                        // The game id equals the challenge id: hold a game slot until it resolves.
+                        if self.games.lock().unwrap().try_reserve(&id, cfg.max_games) {
+                            self.challenger.lock().unwrap().on_sent(&id, &name, now);
+                            println!("challenged {name} ({limit}+{inc}, challenge {id})");
+                        } else {
+                            let _ = self.ctx.client.cancel_challenge(&id);
+                            println!("no free game slot for challenge {id}; cancelled");
+                        }
+                    }
+                    Err(e) => {
+                        let status = if let ApiError::Status(code, _) = &e { Some(*code) } else { None };
+                        self.challenger.lock().unwrap().on_send_failed(&name, status, now);
+                        eprintln!("could not challenge {name}: {e}");
+                    }
+                },
+            }
         }
     }
 }
