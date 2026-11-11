@@ -47,6 +47,8 @@ pub struct MockOptions {
     pub online_bots: Vec<String>,
     /// HTTP status for POST /api/challenge/{user} (200 = created).
     pub create_status: u16,
+    /// Body returned with a non-200 `create_status` (default `{"error":"nope"}`).
+    pub create_body: String,
 }
 
 impl Default for MockOptions {
@@ -64,6 +66,7 @@ impl Default for MockOptions {
             clock_ms: 20_000,
             online_bots: vec![],
             create_status: 200,
+            create_body: String::new(),
         }
     }
 }
@@ -369,15 +372,17 @@ fn handle_conn(mut stream: TcpStream, state: Arc<Mutex<MockState>>, stop: Arc<At
         }
         ("POST", p) if p.starts_with("/api/challenge/") => {
             let user = p.trim_start_matches("/api/challenge/").to_string();
-            let (status, n) = {
+            let (status, n, err_body) = {
                 let mut st = state.lock().unwrap();
                 st.created.push((user, req.body.clone()));
-                (st.opts.create_status, st.created.len())
+                (st.opts.create_status, st.created.len(), st.opts.create_body.clone())
             };
             if status == 200 {
                 respond_json(&mut stream, 200, &json!({"challenge": {"id": format!("mockch{n:02}")}}).to_string());
-            } else {
+            } else if err_body.is_empty() {
                 respond_json(&mut stream, status, r#"{"error":"nope"}"#);
+            } else {
+                respond_json(&mut stream, status, &err_body);
             }
         }
         ("GET", p) if p.starts_with("/api/bot/online") => {

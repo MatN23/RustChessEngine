@@ -359,10 +359,16 @@ impl Bot {
             let candidates: Vec<String> = if !cfg.challenge_bots.is_empty() {
                 cfg.challenge_bots.clone()
             } else {
-                let stale = cached_at.map_or(true, |t| now.duration_since(t) > Duration::from_secs(600));
+                // Refresh every 3 minutes, or sooner (after 1 minute) when everybody we know about
+                // is blocked, so newly online bots are found instead of cycling through the same ones.
+                let age = cached_at.map_or(Duration::from_secs(u64::MAX / 4), |t| now.duration_since(t));
+                let exhausted = !cached.is_empty()
+                    && self.challenger.lock().unwrap().available(&cached, now) == 0;
+                let stale = age > Duration::from_secs(180) || (exhausted && age > Duration::from_secs(60));
                 if stale && slots_free {
-                    match self.ctx.client.online_bots(60) {
+                    match self.ctx.client.online_bots(200) {
                         Ok(v) => {
+                            println!("{} bots online", v.len());
                             cached = v;
                             cached_at = Some(now);
                         }
@@ -401,8 +407,12 @@ impl Bot {
                     }
                     Err(e) => {
                         let status = if let ApiError::Status(code, _) = &e { Some(*code) } else { None };
-                        self.challenger.lock().unwrap().on_send_failed(&name, status, now);
-                        eprintln!("could not challenge {name}: {e}");
+                        let retry_after = e.rate_limit_seconds();
+                        self.challenger.lock().unwrap().on_send_failed(&name, status, retry_after, now);
+                        match retry_after {
+                            Some(secs) => println!("{name} is rate limited by Lichess for {} min; skipping them", secs / 60),
+                            None => eprintln!("could not challenge {name}: {e}"),
+                        }
                     }
                 },
             }

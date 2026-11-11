@@ -15,6 +15,28 @@ pub enum ApiError {
     BadInput(String),
 }
 
+impl ApiError {
+    /// Seconds Lichess asks us to wait (`{"ratelimit":{"seconds":N}}`), if the error says so. Lichess
+    /// answers a per-opponent limit ("X played 100 games against other bots today") with HTTP 400
+    /// and this field, not with 429.
+    pub fn rate_limit_seconds(&self) -> Option<u64> {
+        let ApiError::Status(_, body) = self else { return None };
+        if let Ok(v) = serde_json::from_str::<Value>(body) {
+            if let Some(s) = v["ratelimit"]["seconds"].as_u64() {
+                return Some(s);
+            }
+        }
+        // The body is truncated to 300 bytes, which can cut the JSON: scan for the number.
+        let i = body.find("\"seconds\":")? + "\"seconds\":".len();
+        let digits: String = body[i..]
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        digits.parse().ok()
+    }
+}
+
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

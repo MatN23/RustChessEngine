@@ -671,6 +671,19 @@ fn challenge_client_calls_hit_the_right_endpoints_with_the_right_parameters() {
 }
 
 #[test]
+fn per_opponent_limit_error_exposes_the_wait_time() {
+    // exactly what Lichess returned in the log: HTTP 400 with ratelimit.seconds
+    let body = r#"{"error":"Lynx_BOT played 100 games against other bots today, please wait until 2026-11-10T08:08:19.748Z to challenge them.","ratelimit":{"key":"bot.vsBot.day","seconds":19662}}"#;
+    let e = ApiError::Status(400, body.to_string());
+    assert_eq!(e.rate_limit_seconds(), Some(19_662));
+    // truncated body (the client keeps 300 bytes) still yields the number
+    let cut = ApiError::Status(400, body[..body.len() - 2].to_string()); // closing braces lost
+    assert_eq!(cut.rate_limit_seconds(), Some(19_662));
+    assert_eq!(ApiError::Status(500, "boom".into()).rate_limit_seconds(), None);
+    assert_eq!(ApiError::Transport("x".into()).rate_limit_seconds(), None);
+}
+
+#[test]
 fn rate_limit_on_challenge_creation_surfaces_as_status_429() {
     let server = MockServer::start(MockOptions { create_status: 429, ..Default::default() });
     let client = LichessClient::new(&server.url, TOKEN);
@@ -767,7 +780,7 @@ fn declined_challenge_blocks_the_opponent_and_frees_the_game_slot() {
 
     bot.process_event(&json!({
         "type": "challengeDeclined",
-        "challenge": {"id": "abcd1234", "declineReasonKey": "noBot"}
+        "challenge": {"id": "abcd1234", "declineReasonKey": "nobot"}
     }));
     assert!(!ch.lock().unwrap().has_pending());
     assert!(ch.lock().unwrap().is_blocked("maia9", Instant::now() + Duration::from_secs(3600)), "noBot is a long block");
@@ -777,6 +790,38 @@ fn declined_challenge_blocks_the_opponent_and_frees_the_game_slot() {
     ch.lock().unwrap().on_sent("efgh5678", "beta", now);
     bot.process_event(&json!({"type": "challengeCanceled", "challenge": {"id": "efgh5678"}}));
     assert!(!ch.lock().unwrap().has_pending());
+}
+
+#[test]
+fn opponents_that_hit_lichess_daily_limit_are_skipped_not_retried() {
+    // The real reply from the log: HTTP 400 + "ratelimit":{"seconds":19662}.
+    let body = r#"{"error":"X played 100 games against other bots today, please wait until later to challenge them.","ratelimit":{"key":"bot.vsBot.day","seconds":19662}}"#;
+    let created = Arc::new(Mutex::new(Vec::new()));
+    let cap = Arc::clone(&created);
+    let opts = MockOptions {
+        challenges: vec![],
+        online_bots: vec!["TestBot".into(), "alpha".into(), "beta".into(), "gamma".into(), "delta".into()],
+        create_status: 400,
+        create_body: body.to_string(),
+        ..Default::default()
+    };
+    let _ = run_scenario(
+        opts,
+        |cfg| {
+            cfg.auto_challenge = true;
+            cfg.challenge_bots = vec![]; // discover from the online list
+        },
+        move |srv, _| {
+            let st = srv.state.lock().unwrap();
+            *cap.lock().unwrap() = st.created.clone();
+            st.created.len() >= 3
+        },
+    );
+    let created = created.lock().unwrap();
+    let users: Vec<&str> = created.iter().map(|(u, _)| u.as_str()).collect();
+    let unique: std::collections::HashSet<&&str> = users.iter().collect();
+    assert_eq!(unique.len(), users.len(), "a rate-limited opponent was retried: {users:?}");
+    assert!(!users.contains(&"TestBot"), "challenged itself: {users:?}");
 }
 
 #[test]
