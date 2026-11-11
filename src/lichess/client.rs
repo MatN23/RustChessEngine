@@ -63,7 +63,7 @@ fn map_err(e: ureq::Error) -> ApiError {
 /// Ids come from the network and end up inside URL paths; only allow what
 /// Lichess actually uses.
 fn valid_id(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_alphanumeric())
+    (8..=32).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 /// Lichess usernames: letters, digits, `_` and `-`, 2 to 30 characters.
