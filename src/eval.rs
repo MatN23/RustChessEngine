@@ -1,9 +1,9 @@
 use crate::board::{BoardState, Piece, Color, PIECE_VALUES};
 use crate::bitboard::*;
 
-// ══════════════════════════════════════════════════════════════════════════════
+// 
 // PROFESSIONAL EVALUATION WEIGHTS (Stockfish-Calibrated)
-// ══════════════════════════════════════════════════════════════════════════════
+// 
 
 // Material (tournament-tested values)
 const PAWN_VALUE: i32 = 100;
@@ -386,7 +386,7 @@ impl Evaluator {
         total_risk.min(2000)
     }
 
-    // 🎯 SEE - Static Exchange Evaluation (Swap List)
+    //  SEE - Static Exchange Evaluation (Swap List)
     
     /// Piece values indexed by piece type for SEE (same order as Piece enum).
     /// Index 0 = Empty, 1 = Pawn, 2 = Knight, 3 = Bishop, 4 = Rook, 5 = Queen, 6 = King.
@@ -412,7 +412,7 @@ impl Evaluator {
                           | (board.pieces[0][Piece::Queen as usize]
                            | board.pieces[1][Piece::Queen as usize])) & occupied;
 
-        // Reverse‐lookup: "which pawns attack this square?"
+        // Reverse-lookup: "which pawns attack this square?"
         // White pawns that attack `square` are found via black's pawn-attack pattern.
         let pawn_att = (tables.pawn_attacks[1][square as usize] & all_pawns_w)
                      | (tables.pawn_attacks[0][square as usize] & all_pawns_b);
@@ -432,7 +432,7 @@ impl Evaluator {
         board: &BoardState,
         color: usize,
     ) -> Option<(u8, usize)> {
-        // Iterate in LVA order: Pawn(1) → Knight(2) → Bishop(3) → Rook(4) → Queen(5) → King(6)
+        // Iterate in LVA order: Pawn(1) -> Knight(2) -> Bishop(3) -> Rook(4) -> Queen(5) -> King(6)
         for pt in 1..=6usize {
             let subset = attackers & board.pieces[color][pt];
             if subset != 0 {
@@ -443,9 +443,9 @@ impl Evaluator {
         None
     }
 
-    /// Full swap‐list SEE for a capture move from `from` → `to`.
+    /// Full swap-list SEE for a capture move from `from` -> `to`.
     ///
-    /// `target_piece` is the piece type index (1–6) of the piece currently on `to`
+    /// `target_piece` is the piece type index (1-6) of the piece currently on `to`
     /// (the initial victim). `side` is the color (0/1) of the side making the
     /// initial capture (i.e., the side that owns the piece on `from`).
     ///
@@ -475,7 +475,7 @@ impl Evaluator {
         // Initial gain: we capture target_piece.
         gain[0] = Self::SEE_VALUES[target_piece];
 
-        // Simulated occupancy — remove the initial attacker.
+        // Simulated occupancy - remove the initial attacker.
         let mut occupied = board.all_pieces & !(1u64 << from);
 
         // The piece now sitting on `to` (i.e., the attacker that just moved).
@@ -509,7 +509,7 @@ impl Evaluator {
                 all_attackers, board, side_to_move,
             ) {
                 Some(v) => v,
-                None => break, // No more attackers for this side — sequence ends.
+                None => break, // No more attackers for this side - sequence ends.
             };
 
             // Don't allow king captures if the opponent still has attackers.
@@ -524,7 +524,7 @@ impl Evaluator {
             occupied ^= 1u64 << attacker_sq;
             current_piece_value = Self::SEE_VALUES[pt];
 
-            // Recompute attackers — this is what discovers x-ray sliders.
+            // Recompute attackers - this is what discovers x-ray sliders.
             all_attackers = Self::attackers_to(board, to, occupied, tables);
             all_attackers &= occupied;
 
@@ -533,8 +533,8 @@ impl Evaluator {
 
         // Backward propagation (minimax on the gain array).
         // At each depth, the side to move picks the better of:
-        //   • stand pat  → keeps -gain[d-1]
-        //   • recapture  → gets  gain[d]
+        //   - stand pat  -> keeps -gain[d-1]
+        //   - recapture  -> gets  gain[d]
         while depth > 1 {
             depth -= 1;
             gain[depth - 1] = -((-gain[depth - 1]).max(gain[depth]));
@@ -543,7 +543,7 @@ impl Evaluator {
         gain[0]
     }
 
-    /// Evaluate whether a move `mv` has SEE ≥ `threshold`.
+    /// Evaluate whether a move `mv` has SEE >= `threshold`.
     /// Now handles both captures and quiet moves.
     pub fn see_capture(board: &BoardState, mv: &crate::movegen::Move, threshold: i32) -> bool {
         let (target_piece, side) = if mv.flags == crate::movegen::EP_CAPTURE {
@@ -560,9 +560,9 @@ impl Evaluator {
         Self::see(board, mv.from, mv.to, target_piece, side) >= threshold
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // GAME PHASE AND TAPERING
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn game_phase(board: &BoardState) -> i32 {
         let mut phase = 0;
@@ -581,9 +581,9 @@ impl Evaluator {
         (mg_score * phase + eg_score * (24 - phase)) / 24
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // MATERIAL AND PIECE-SQUARE TABLES
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn material_and_pst(board: &BoardState) -> (i32, i32) {
         let mut mg_score = 0;
@@ -627,9 +627,9 @@ impl Evaluator {
         (mg_score, eg_score)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // PAWN STRUCTURE
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn pawn_structure(board: &BoardState, phase: i32) -> i32 {
         let mut score = 0;
@@ -682,7 +682,7 @@ impl Evaluator {
         score
     }
 
-    // 🏰 Pawn Storm Evaluation
+    //  Pawn Storm Evaluation
     fn passed_pawn_evaluation(board: &BoardState, phase: i32) -> i32 {
         let mut score = 0;
         let white_pawns = board.pieces[0][Piece::Pawn as usize];
@@ -820,7 +820,7 @@ impl Evaluator {
         let black_pawns = board.pieces[1][Piece::Pawn as usize];
         let tables = &ATTACK_TABLES;
 
-        // White pawn chains — count pawns defended by other pawns
+        // White pawn chains - count pawns defended by other pawns
         let mut temp = white_pawns;
         while temp != 0 {
             let (new_bb, sq) = pop_lsb(temp);
@@ -847,7 +847,7 @@ impl Evaluator {
             }
         }
         
-        // Backward pawns — pawns that can't advance because enemy pawns control the stop square
+        // Backward pawns - pawns that can't advance because enemy pawns control the stop square
         // and no friendly pawns on adjacent files can support them
         for file in 0..8u8 {
             let file_mask = FILE_A << file;
@@ -944,7 +944,7 @@ impl Evaluator {
         
         let mut attackers = 0;
         
-        // Weight attackers by piece type — queens are far more dangerous than knights
+        // Weight attackers by piece type - queens are far more dangerous than knights
         let piece_weights: [i32; 6] = [0, 0, 2, 2, 3, 5]; // Pawn, Knight, Bishop, Rook, Queen
         
         for piece_type in 2..=5 {  // Knight to Queen
@@ -972,9 +972,9 @@ impl Evaluator {
         attackers
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // PIECE-SPECIFIC EVALUATIONS
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn rook_evaluation(board: &BoardState) -> i32 {
         let mut score = 0;
@@ -1084,7 +1084,7 @@ impl Evaluator {
         score
     }
     
-    // 🎨 Fianchetto Pattern Recognition
+    //  Fianchetto Pattern Recognition
     fn fianchetto_patterns(board: &BoardState) -> i32 {
         let mut score = 0;
         let white_bishops = board.pieces[0][Piece::Bishop as usize];
@@ -1289,9 +1289,9 @@ impl Evaluator {
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // SAFE MOBILITY (ONLY COUNT SAFE SQUARES)
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn piece_mobility_safe(board: &BoardState, phase: i32, white_attacks: Bitboard, black_attacks: Bitboard) -> i32 {
         let mut white_mobility = 0;
@@ -1388,9 +1388,9 @@ impl Evaluator {
         ((white_mobility - black_mobility) * phase) / 24
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // SPACE EVALUATION
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn space_evaluation(board: &BoardState, phase: i32, white_control: Bitboard, black_control: Bitboard) -> i32 {
         // Space matters more in middlegame
@@ -1414,9 +1414,9 @@ impl Evaluator {
         ((center_score + extended_score) * phase) / 24
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // ELITE KING SAFETY
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn king_safety_advanced(board: &BoardState, phase: i32) -> i32 {
         // King safety mainly matters in middlegame
@@ -1545,9 +1545,9 @@ impl Evaluator {
         score
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     // PIECE CONNECTIVITY (pieces protecting each other)
-    // ══════════════════════════════════════════════════════════════════════════════
+    // 
     
     fn piece_connectivity(board: &BoardState, phase: i32, white_attacks: Bitboard, black_attacks: Bitboard) -> i32 {
         

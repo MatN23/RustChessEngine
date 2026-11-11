@@ -162,7 +162,7 @@ fn ndjson_parsing() {
 fn client_refuses_malformed_ids_and_moves() {
     // Never touches the network: validation happens first.
     let c = LichessClient::new("http://127.0.0.1:9", "t");
-    for bad in ["", "../etc", "ab/cd", "a b", "gameé", &"x".repeat(40)] {
+    for bad in ["", "../etc", "ab/cd", "a b", "gamee", &"x".repeat(40)] {
         assert!(matches!(c.make_move(bad, "e2e4"), Err(ApiError::BadInput(_))), "{bad:?}");
         assert!(matches!(c.open_game_stream(bad), Err(ApiError::BadInput(_))), "{bad:?}");
         assert!(matches!(c.accept_challenge(bad), Err(ApiError::BadInput(_))), "{bad:?}");
